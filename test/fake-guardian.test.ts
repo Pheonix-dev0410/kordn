@@ -440,3 +440,18 @@ describe('fake guardian: refused connections', () => {
     expect((await g.listActivity())[0]!.metadata).toEqual({ reason: 'connection_limit', refused: 1 });
   });
 });
+
+describe('fake guardian: recordRefusedConnection never rejects', () => {
+  it('resolves even when logging fails', async () => {
+    let broken = false;
+    const g = createFakeGuardian({
+      policy,
+      nowMs: () => {
+        if (broken) throw new Error('clock gone');
+        return Date.UTC(2026, 9, 25);
+      },
+    });
+    broken = true;
+    await expect(g.recordRefusedConnection(3)).resolves.toBeUndefined();
+  });
+});

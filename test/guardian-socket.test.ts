@@ -2,7 +2,7 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { connect, type Server, type Socket } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import policyJson from '../examples/policy.json' with { type: 'json' };
 import { createFakeGuardian } from '../src/fake-guardian.js';
 import type { Guardian } from '../src/guardian-api.js';
@@ -311,7 +311,8 @@ describe('guardian socket refused connections', () => {
     await tick(50);
   }
 
-  it('reports refusals to the guardian at most once a second, with the count', async () => {
+  /** A guardian that records refusal reports, and a server that counts drops as they happen. */
+  async function refusalServer(options: Parameters<typeof serveGuardianSocket>[3]) {
     const reports: (number | undefined)[] = [];
     const guardian: Guardian = {
       ...createFakeGuardian({ policy }),
@@ -319,15 +320,51 @@ describe('guardian socket refused connections', () => {
         reports.push(refused);
       },
     };
-    const { path } = await startWith(guardian, {});
-    await open(path, 40);
+    const { path } = await startWith(guardian, options);
+    const server = servers.at(-1)!;
+    let drops = 0;
+    server.on('drop', () => (drops += 1));
+    /** Opens `n` connections and resolves once the server has dropped `dropped` in total. */
+    const openUntilDropped = async (n: number, dropped: number) => {
+      for (let i = 0; i < n; i++) client(path);
+      while (drops < dropped) await new Promise((resolve) => setImmediate(resolve));
+      // Reports go out on a microtask after the drop.
+      await new Promise((resolve) => setImmediate(resolve));
+    };
+    return { reports, server, openUntilDropped };
+  }
+
+  it('reports refusals to the guardian at most once a second, with the count', async () => {
+    // Only the report window's timer is faked; socket I/O and setImmediate stay real.
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    try {
+      const { reports, openUntilDropped } = await refusalServer({});
+      await openUntilDropped(40, 8);
+      expect(reports).toEqual([1]);
+      vi.advanceTimersByTime(999);
+      await new Promise((resolve) => setImmediate(resolve));
+      expect(reports).toEqual([1]);
+      vi.advanceTimersByTime(1);
+      await new Promise((resolve) => setImmediate(resolve));
+      expect(reports).toEqual([1, 7]);
+      await openUntilDropped(1, 9);
+      expect(reports).toEqual([1, 7]);
+      vi.advanceTimersByTime(1000);
+      await new Promise((resolve) => setImmediate(resolve));
+      expect(reports).toEqual([1, 7, 1]);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('reports a count still pending when the server closes', async () => {
+    const { reports, server, openUntilDropped } = await refusalServer({ maxConnections: 1 });
+    await openUntilDropped(4, 3);
     expect(reports).toEqual([1]);
-    await tick(1100);
-    expect(reports).toEqual([1, 7]);
-    await open(path, 1);
-    expect(reports).toEqual([1, 7]);
-    await tick(1100);
-    expect(reports).toEqual([1, 7, 1]);
+    for (const s of sockets.splice(0)) s.destroy();
+    await new Promise((resolve) => server.close(resolve));
+    await new Promise((resolve) => setImmediate(resolve));
+    expect(reports).toEqual([1, 2]);
   });
 
   it('logs a refusal through the fake as one valid audit event', async () => {

@@ -66,23 +66,30 @@ export function serveGuardianSocket(
  */
 function reportRefusals(server: Server, guardian: Guardian): void {
   let refused = 0;
-  let window: NodeJS.Timeout | undefined;
-  const flush = () => {
-    window = undefined;
-    if (refused === 0) return;
+  let windowTimer: NodeJS.Timeout | undefined;
+  const report = () => {
+    if (refused === 0) return false;
     const count = refused;
     refused = 0;
     // The guardian promises not to reject; a broken one still mustn't take the server down.
     Promise.resolve()
       .then(() => guardian.recordRefusedConnection(count))
       .catch(() => {});
-    window = setTimeout(flush, REFUSAL_REPORT_INTERVAL_MS).unref();
+    return true;
+  };
+  const flush = () => {
+    windowTimer = report() ? setTimeout(flush, REFUSAL_REPORT_INTERVAL_MS).unref() : undefined;
   };
   server.on('drop', () => {
     refused += 1;
-    if (!window) flush();
+    if (!windowTimer) flush();
   });
-  server.on('close', () => clearTimeout(window));
+  // Refusals still waiting for the window to end are reported, not lost.
+  server.on('close', () => {
+    clearTimeout(windowTimer);
+    windowTimer = undefined;
+    report();
+  });
 }
 
 function handleConnection(guardian: Guardian, agentId: string, socket: Socket, limits: Required<GuardianSocketOptions>): void {

@@ -306,7 +306,12 @@ export function createFakeGuardian(options: FakeGuardianOptions): Guardian {
 
     async recordRefusedConnection(refused = 1) {
       const count = Number.isInteger(refused) && refused > 0 ? refused : 1;
-      log('action.attempted', policy.agentId, { metadata: { reason: 'connection_limit', refused: count } });
+      // Never rejects, like handleCall: the socket server must not have to guard against us.
+      try {
+        log('action.attempted', policy.agentId, { metadata: { reason: 'connection_limit', refused: count } });
+      } catch {
+        // Nothing to fall back to: the log is the only place this goes.
+      }
     },
 
     async getPolicy() {
