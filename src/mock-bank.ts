@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto';
 import type { DatabaseSync } from 'node:sqlite';
 import { openPrivateDatabase } from './database.js';
 import { requestHash } from './hash.js';
+import { labelUntrusted } from './untrusted.js';
 import { MAX_AMOUNT_MINOR, TOOL_INPUTS, TOOL_OUTPUTS } from './schema.js';
 import type { AdapterResult, BankAdapter, Clock, TransferCall } from './schema.js';
 
@@ -140,19 +141,13 @@ export class MockBankAdapter implements BankAdapter {
   async listTransactions(resourceId: string, fromDate: string, limit: number) {
     TOOL_INPUTS.af_list_transactions.parse({ resourceId, fromDate, limit });
     this.checkResource(resourceId);
+    const nowMs = this.clock.nowMs();
     const fixture = TRANSACTIONS.map((tx) => ({ transactionId: tx.transactionId, amountMinor: tx.amountMinor,
-      currency: 'USD', date: transactionDate(tx), description: {
-        text: tx.description, trust: 'external_untrusted',
-        riskSignals: [
-          ...(tx.injection ? ['instruction_like_text'] : []),
-          ...(/https?:\/\//i.test(tx.description) ? ['contains_url'] : []),
-          ...(/payeeId|attacker|landlord/i.test(tx.description) ? ['contains_payee_like_id'] : []),
-        ],
-      } }));
+      currency: 'USD', date: transactionDate(tx, nowMs), description: labelUntrusted(tx.description) }));
     const transfers = this.db.prepare("SELECT * FROM bank_transfers WHERE json_extract(result_json, '$.state')='succeeded'").all()
       .map((tx) => ({ transactionId: `txn-${String(Number(tx.seq) + TRANSACTIONS.length).padStart(3, '0')}`,
         amountMinor: -Number(tx.amount_minor), currency: 'USD', date: String(tx.date),
-        description: { text: 'Mock transfer', trust: 'external_untrusted', riskSignals: [] } }));
+        description: labelUntrusted('Mock transfer') }));
     return TOOL_OUTPUTS.af_list_transactions.parse({ transactions: [...fixture, ...transfers]
       .filter((tx) => tx.date >= fromDate).sort((a, b) => b.date.localeCompare(a.date) || b.transactionId.localeCompare(a.transactionId)).slice(0, limit) });
   }

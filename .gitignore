@@ -3,10 +3,3 @@ dist/
 *.sqlite*
 .env
 .DS_Store
-
-# Local AI tools and generated knowledge graph
-/AGENTS.md
-/.codex/
-/.agents/skills/ponytail/
-/graphify-out/
-/.graphify*

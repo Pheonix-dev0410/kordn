@@ -50,6 +50,7 @@ export class Ledger {
         UNIQUE(agent_id, idempotency_key)
       );
       CREATE INDEX IF NOT EXISTS reservations_window ON reservations(agent_id, created_ms, state);
+      CREATE INDEX IF NOT EXISTS reservations_state ON reservations(agent_id, state, expires_ms);
       CREATE TABLE IF NOT EXISTS usage_events (
         id TEXT PRIMARY KEY, agent_id TEXT NOT NULL, created_ms INTEGER NOT NULL, tool TEXT NOT NULL
       );
@@ -186,6 +187,14 @@ export class Ledger {
       .all(agentId ?? null, agentId ?? null).map((row) => this.decode(row));
   }
 
+  listByState(agentId: string, states: readonly State[], expiresBeforeMs?: number): Reservation[] {
+    if (states.length === 0) return [];
+    const expiry = expiresBeforeMs === undefined ? '' : ' AND expires_ms<=?';
+    return this.db.prepare(`SELECT * FROM reservations WHERE agent_id=? AND state IN (${states.map(() => '?').join(',')})
+      ${expiry} ORDER BY created_ms, id`)
+      .all(agentId, ...states, ...(expiresBeforeMs === undefined ? [] : [expiresBeforeMs])).map((row) => this.decode(row));
+  }
+
   private transitionInTransaction(id: string, state: State, reason: DenyCode | null = null,
     event?: AuditEvent['event']): Reservation {
     const r = this.get(id);
@@ -256,8 +265,8 @@ export class Ledger {
     this.transaction(() => {
       this.getPolicy(agentId);
       this.db.prepare('UPDATE policies SET revoked=1 WHERE agent_id=?').run(agentId);
-      for (const r of this.list(agentId)) {
-        if (['RESERVED', 'PENDING_APPROVAL', 'APPROVED'].includes(r.state)) this.transitionInTransaction(r.id, 'REJECTED', 'SESSION_REVOKED');
+      for (const r of this.listByState(agentId, ['RESERVED', 'PENDING_APPROVAL', 'APPROVED'])) {
+        this.transitionInTransaction(r.id, 'REJECTED', 'SESSION_REVOKED');
       }
       this.event(agentId, 'session.revoked');
     });

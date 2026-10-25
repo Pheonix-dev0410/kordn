@@ -98,8 +98,7 @@ export class Guardian {
 
   /** Startup reconciliation never resends an uncertain action. */
   async reconcile(): Promise<void> {
-    for (const r of this.ledger.list(this.agentId)) {
-      if (!['RESERVED', 'APPROVED', 'DISPATCHING', 'UNKNOWN'].includes(r.state)) continue;
+    for (const r of this.ledger.listByState(this.agentId, ['RESERVED', 'APPROVED', 'DISPATCHING', 'UNKNOWN'])) {
       if (r.state === 'DISPATCHING') this.ledger.transition(r.id, 'UNKNOWN');
       let result: AdapterResult;
       try { result = this.outcome(await this.deadline(() => this.adapter.reconcile(r.id))); }
@@ -120,16 +119,14 @@ export class Guardian {
   }
 
   private expirePending(): void {
-    for (const r of this.ledger.list(this.agentId)) {
-      if (r.state === 'PENDING_APPROVAL' && r.expiresMs <= this.ledger.clock.nowMs()) {
-        this.ledger.transition(r.id, 'EXPIRED', 'APPROVAL_EXPIRED');
-      }
+    for (const r of this.ledger.listByState(this.agentId, ['PENDING_APPROVAL'], this.ledger.clock.nowMs())) {
+      this.ledger.transition(r.id, 'EXPIRED', 'APPROVAL_EXPIRED');
     }
   }
 
   listPending(): Reservation[] {
     this.expirePending();
-    return this.ledger.list(this.agentId).filter((r) => r.state === 'PENDING_APPROVAL');
+    return this.ledger.listByState(this.agentId, ['PENDING_APPROVAL']);
   }
 
   async approve(reservationId: string, digest: string, nonce: string) {

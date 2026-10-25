@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { Ledger } from '../src/ledger.js';
-import { harness, propose } from './helpers.js';
+import { harness, propose, transfer } from './helpers.js';
 import { join } from 'node:path';
 
 let h: ReturnType<typeof harness>;
@@ -137,5 +137,31 @@ describe('guardian', () => {
     });
     expect((await propose(h)).state).toBe('succeeded');
     expect(h.ledger.list()[0]!.state).toBe('SUCCEEDED');
+  });
+
+  it('filters terminal history in SQL before decoding lifecycle work', async () => {
+    h = harness();
+    for (let i = 100; i < 110; i++) {
+      const admission = h.ledger.admit(h.policy.agentId, transfer(i));
+      if (admission.kind !== 'transfer') throw new Error('missing reservation');
+      h.ledger.dispatch(admission.reservation.id);
+      h.ledger.transition(admission.reservation.id, 'FAILED');
+    }
+    // An irrelevant historical payload must never be decoded by active-state queries.
+    h.ledger.db.exec("UPDATE reservations SET call_json='not-json' WHERE state='FAILED'");
+    h.bank.faults.responseLost = true;
+    const unknown = await propose(h, 1);
+    h.bank.faults.responseLost = false;
+    const expired = await propose(h, 2, 8000);
+    h.advance(300_000);
+    const pending = await propose(h, 3, 8000);
+    expect(h.guardian.listPending().map((r) => r.id)).toEqual([pending.transferRef]);
+    expect(h.ledger.get(expired.transferRef)?.state).toBe('EXPIRED');
+    await h.guardian.reconcile();
+    expect(h.ledger.get(unknown.transferRef)?.state).toBe('SUCCEEDED');
+    h.guardian.revoke();
+    expect(h.ledger.get(pending.transferRef)?.state).toBe('REJECTED');
+    expect(h.guardian.listPending()).toEqual([]);
+    expect(h.ledger.audit.verifyChain()).toBe(true);
   });
 });

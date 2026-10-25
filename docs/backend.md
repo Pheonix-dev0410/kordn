@@ -118,6 +118,15 @@ instance; no payload identity is accepted. The server never replaces an existing
 socket. The launcher must clean up a stale socket only after confirming that its
 old guardian has stopped.
 
+Mode `0600` is the default for a same-host-UID caller. A container's UID 10001
+does not automatically map to the host socket owner, especially with rootless
+user namespaces. Before issues #11/#12 can claim Contain mode, the launcher and
+guardian contributors must agree on the mapped host UID/GID and either explicit
+ownership mapping or narrowly scoped group access. Verify access from inside the
+actual sandbox, and verify that another agent cannot open that endpoint. Do not
+make the socket world-writable to bypass the mapping problem. This integration
+agreement and Linux verification are still pending.
+
 The protocol is newline-delimited JSON using `SocketRequest` and `SocketResponse`.
 Frames and buffered input are capped at `MAX_FRAME_BYTES`; idle connections time
 out. Each server allows 64 simultaneous connections. Incomplete frames have an

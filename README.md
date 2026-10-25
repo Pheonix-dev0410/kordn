@@ -10,6 +10,16 @@ v0.1 protects a mock bank with fake money only. Don't connect it to real account
 
 Requires a patched Node.js 24 LTS (24.22.1+) or Node.js 26 (26.12.1+).
 
+These are security baselines, rather than minimum versions for API compatibility.
+They include the [October 2026 Node.js security fixes](https://nodejs.org/en/blog/vulnerability/october-2026-security-releases),
+including fixes to DNS/TLS validation and cached UUID randomness in startup snapshots.
+Keep the runtime current within a supported release line; passing tests on an older
+runtime does not establish that its bundled dependencies are patched.
+The tested Node 24 baseline bundles SQLite 3.53.4, which also includes SQLite's
+[WAL-reset corruption fix](https://sqlite.org/wal.html#the_wal_reset_bug).
+That fix matters when multiple connections write or checkpoint the same database;
+it is present in SQLite 3.51.3+ and the documented upstream backports.
+
 ```sh
 git clone https://github.com/Pheonix-dev0410/kordn.git
 cd kordn
