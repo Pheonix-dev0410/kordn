@@ -1,37 +1,46 @@
-import { mkdtempSync } from 'node:fs';
+import { mkdtempSync, rmSync } from 'node:fs';
 import { connect, type Server } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import policyJson from '../examples/policy.json' with { type: 'json' };
 import { createFakeGuardian } from '../src/fake-guardian.js';
+import type { Guardian } from '../src/guardian-api.js';
 import { serveGuardianSocket } from '../src/guardian-socket.js';
 import { MAX_FRAME_BYTES, Policy } from '../src/schema.js';
 
 const policy = Policy.parse(policyJson);
-let server: Server | undefined;
+const servers: Server[] = [];
+const dirs: string[] = [];
 
-afterEach(() => server?.close());
+afterEach(async () => {
+  await Promise.all(servers.splice(0).map((s) => new Promise((resolve) => s.close(resolve))));
+  for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true });
+});
 
-async function start() {
-  const path = join(mkdtempSync(join(tmpdir(), 'kordn-')), 'g.sock');
-  server = await serveGuardianSocket(createFakeGuardian({ policy }), policy.agentId, path);
+async function start(guardian: Guardian = createFakeGuardian({ policy })) {
+  const dir = mkdtempSync(join(tmpdir(), 'kordn-'));
+  dirs.push(dir);
+  const path = join(dir, 'g.sock');
+  servers.push(await serveGuardianSocket(guardian, policy.agentId, path));
   return path;
 }
 
-/** Send raw text, collect response lines until the server closes or `want` lines arrive. */
+/** Send raw text, collect complete response lines until the server closes or `want` lines arrive. */
 function exchange(path: string, text: string, want: number): Promise<{ lines: unknown[]; closed: boolean }> {
   return new Promise((resolve) => {
     const sock = connect(path);
     let buf = '';
+    // Only lines the server finished with a newline: a trailing partial line is not a response.
+    const complete = () => buf.split('\n').slice(0, -1);
     const done = (closed: boolean) => {
       sock.destroy();
-      resolve({ lines: buf.split('\n').filter(Boolean).map((l) => JSON.parse(l)), closed });
+      resolve({ lines: complete().map((l) => JSON.parse(l)), closed });
     };
     sock.setEncoding('utf8');
     sock.on('data', (d: string) => {
       buf += d;
-      if (buf.split('\n').filter(Boolean).length >= want) done(false);
+      if (complete().length >= want) done(false);
     });
     sock.on('close', () => done(true));
     sock.write(text);
@@ -78,8 +87,7 @@ describe('guardian socket', () => {
         return calls === 1 ? Promise.reject(new Error('db locked')) : guardian.handleCall(agent, tool, args);
       },
     };
-    const path = join(mkdtempSync(join(tmpdir(), 'kordn-')), 'g.sock');
-    server = await serveGuardianSocket(flaky, policy.agentId, path);
+    const path = await start(flaky);
     const { lines } = await exchange(
       path,
       frame('1', 'af_get_balance', { resourceId: policy.resourceId }) + frame('2', 'af_get_balance', { resourceId: policy.resourceId }),
