@@ -66,6 +66,17 @@ describe('kordn CLI', () => {
     expect(pkg.bin).toEqual({ kordn: 'dist/index.js' });
   });
 
+  it('packs the built CLI and the example policy, and nothing else of the repo', () => {
+    const [packed] = JSON.parse(
+      execFileSync('npm', ['pack', '--dry-run', '--json', '--ignore-scripts'], { cwd: root, encoding: 'utf8' }),
+    ) as [{ files: { path: string }[] }];
+    const paths = packed.files.map((f) => f.path);
+    expect(paths).toEqual(expect.arrayContaining(['dist/index.js', 'dist/mcp-server.js', 'examples/policy.json']));
+    expect(paths.filter((p) => /^(src|test|docs)\//.test(p))).toEqual([]);
+    const pkg = JSON.parse(readFileSync(join(root, 'package.json'), 'utf8')) as { scripts: Record<string, string> };
+    expect(pkg.scripts.prepack).toBe('npm run build');
+  });
+
   it.each([
     ['2025 (initialize)', undefined],
     ['2026-07-28 (stateless)', { mode: { pin: '2026-07-28' as const } }],

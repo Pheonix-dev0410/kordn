@@ -8,13 +8,18 @@
   "bin": {
     "kordn": "dist/index.js"
   },
+  "files": [
+    "dist",
+    "examples"
+  ],
   "engines": {
     "node": ">=24"
   },
   "scripts": {
     "build": "tsc && node -e \"require('node:fs').chmodSync('dist/index.js', 0o755)\"",
     "typecheck": "tsc --noEmit",
-    "test": "vitest run"
+    "test": "vitest run",
+    "prepack": "npm run build"
   },
   "dependencies": {
     "@modelcontextprotocol/server": "2.3.1",
