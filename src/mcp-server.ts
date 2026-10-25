@@ -1,11 +1,13 @@
-import { type CallToolResult, Server, type Tool } from '@modelcontextprotocol/server';
+import { type CallToolResult, ProtocolError, ProtocolErrorCode, Server, type Tool } from '@modelcontextprotocol/server';
 import { z } from 'zod';
 import type { CallResult, Guardian } from './guardian-api.js';
 import { type DenyCode, DenyCode as DenyCodeSchema, TOOL_INPUTS, TOOL_NAMES, type ToolName } from './schema.js';
 
-// The agent-facing MCP surface. Built on the low-level Server because McpServer rejects
-// unknown tools and invalid args itself, and every call has to reach the guardian so it
-// is logged before it is rejected.
+// The agent-facing MCP surface. Every tools/call has to reach the guardian so it is logged
+// before it is rejected. McpServer rejects unknown tools and invalid args itself, and even
+// a low-level tools/call handler sits behind the SDK's wire validation, which drops calls
+// with a non-string name or non-object arguments. So tools/call is served from the
+// fallback handler, which gets the raw request.
 
 export const SERVER_INFO = { name: 'kordn', version: '0.0.0' };
 
@@ -36,15 +38,18 @@ export interface McpServerOptions {
 export function createMcpServer({ agentId, handleCall }: McpServerOptions): Server {
   const server = new Server(SERVER_INFO, { capabilities: { tools: {} } });
   server.setRequestHandler('tools/list', () => ({ tools: [...TOOLS] }));
-  server.setRequestHandler('tools/call', async (request) => {
+  server.fallbackRequestHandler = async (request) => {
+    // Fixed message: the method name is agent-supplied.
+    if (request.method !== 'tools/call') throw new ProtocolError(ProtocolErrorCode.MethodNotFound, 'Method not found');
+    const params: Record<string, unknown> = isPlainObject(request.params) ? request.params : {};
     let result: CallResult;
     try {
-      result = await handleCall(agentId, request.params.name, request.params.arguments);
+      result = await handleCall(agentId, params.name, params.arguments);
     } catch {
       result = unavailable;
     }
     return server.projectCallToolResult(toToolResult(result), undefined);
-  });
+  };
   return server;
 }
 

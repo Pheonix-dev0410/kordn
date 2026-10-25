@@ -67,6 +67,10 @@ describe('kordn CLI', () => {
     expect((await client.callTool({ name: 'shell', arguments: {} })).structuredContent).toEqual({
       error: { code: 'UNKNOWN_ACTION' },
     });
+    for (const params of [{ name: 'shell', arguments: 'str' }, { name: 42 }]) {
+      const malformed = await client.request({ method: 'tools/call', params: params as never });
+      expect(malformed.structuredContent).toEqual({ error: { code: 'UNKNOWN_ACTION' } });
+    }
   });
 
   it('loads --policy', async () => {
@@ -142,10 +146,13 @@ describe('kordn CLI', () => {
       expect((await client.callTool({ name: 'af_add_payee', arguments: { payeeId: 'x' } })).isError).toBe(true);
       // No arguments at all: the frame must still be valid so the guardian logs it.
       expect((await client.callTool({ name: 'shell' })).structuredContent).toEqual({ error: { code: 'UNKNOWN_ACTION' } });
-      expect(await guardian.listActivity({ events: ['policy.denied'] })).toMatchObject([
-        { agent: policy.agentId, reasonCode: 'UNKNOWN_ACTION' },
-        { agent: policy.agentId, reasonCode: 'UNKNOWN_ACTION' },
-      ]);
+      for (const params of [{ name: 'shell', arguments: 'str' }, { name: 42 }]) {
+        const malformed = await client.request({ method: 'tools/call', params: params as never });
+        expect(malformed.structuredContent).toEqual({ error: { code: 'UNKNOWN_ACTION' } });
+      }
+      const denied = await guardian.listActivity({ events: ['policy.denied'] });
+      expect(denied).toHaveLength(4);
+      expect(denied.every((e) => e.agent === policy.agentId && e.reasonCode === 'UNKNOWN_ACTION')).toBe(true);
     });
 
     it('returns INTERNAL_UNAVAILABLE when the socket is down, never falling back', async () => {

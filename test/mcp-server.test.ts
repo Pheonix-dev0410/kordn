@@ -1,6 +1,7 @@
 import { Client, InMemoryTransport } from '@modelcontextprotocol/client';
 import { serveStdio } from '@modelcontextprotocol/server/stdio';
 import { afterEach, describe, expect, it } from 'vitest';
+import { z } from 'zod';
 import policyJson from '../examples/policy.json' with { type: 'json' };
 import { createFakeGuardian } from '../src/fake-guardian.js';
 import type { Guardian } from '../src/guardian-api.js';
@@ -79,6 +80,27 @@ describe.each(eras)('MCP server over $era', ({ versionNegotiation }) => {
     expect(denied[0]).toMatchObject({ agent: policy.agentId, reasonCode: code });
     const attempted = await guardian.listActivity({ events: ['action.attempted'] });
     expect(attempted[0]?.metadata).toEqual({ tool: name });
+  });
+
+  it.each([
+    ['non-object arguments', { name: 'shell', arguments: 'str' }, 'UNKNOWN_ACTION'],
+    ['non-object arguments to a real tool', { name: 'af_get_balance', arguments: 'str' }, 'INVALID_ARGUMENTS'],
+    ['a non-string name', { name: 42 }, 'UNKNOWN_ACTION'],
+    ['no arguments', { name: 'af_get_balance' }, 'INVALID_ARGUMENTS'],
+  ])('logs and rejects a malformed call with %s', async (_name, params, code) => {
+    const { client, guardian } = await connectFake();
+    const result = await client.request({ method: 'tools/call', params: params as never });
+    expect(result.isError).toBe(true);
+    expect(result.structuredContent).toEqual({ error: { code } });
+    expect(await guardian.listActivity({ events: ['policy.denied'] })).toMatchObject([
+      { agent: policy.agentId, reasonCode: code },
+    ]);
+  });
+
+  it('answers any other method with MethodNotFound', async () => {
+    const { client } = await connectFake();
+    await expect(client.request({ method: 'kordn/admin', params: {} }, z.object({}))).rejects.toMatchObject({ code: -32601 });
+    await expect(client.request({ method: 'resources/list', params: {} })).rejects.toMatchObject({ code: -32601 });
   });
 
   it('rejects an agent-supplied policyApproved flag', async () => {

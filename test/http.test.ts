@@ -115,6 +115,11 @@ describe('HTTP transport', () => {
     expect(balance.structuredContent).toMatchObject({ currency: 'USD' });
     const shell = await client.callTool({ name: 'shell', arguments: {} });
     expect(shell.structuredContent).toEqual({ error: { code: 'UNKNOWN_ACTION' } });
-    expect(await guardian.listActivity({ events: ['policy.denied'] })).toHaveLength(1);
+    for (const params of [{ name: 'shell', arguments: 'str' }, { name: 42 }]) {
+      const malformed = await client.request({ method: 'tools/call', params: params as never });
+      expect(malformed.isError).toBe(true);
+      expect(malformed.structuredContent).toEqual({ error: { code: 'UNKNOWN_ACTION' } });
+    }
+    expect(await guardian.listActivity({ events: ['policy.denied'] })).toHaveLength(3);
   });
 });
