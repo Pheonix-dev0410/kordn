@@ -33,7 +33,10 @@ export const ProbeResult = z.strictObject({
   /** Interface name of every IPv4 / IPv6 route. */
   ipv4Routes: Lines,
   ipv6Routes: Lines,
-  mounts: z.array(z.strictObject({ mountPoint: z.string(), fsType: z.string(), source: z.string(), options: z.string() })).nullable(),
+  /** From /proc/self/mountinfo. `root` is the path within the source filesystem (not "/" for a bind of a subdirectory). */
+  mounts: z
+    .array(z.strictObject({ mountPoint: z.string(), root: z.string(), fsType: z.string(), source: z.string(), options: z.string() }))
+    .nullable(),
   writes: z.array(z.strictObject({ path: z.string(), result: Outcome })),
   paths: z.array(z.strictObject({ path: z.string(), result: Outcome })),
   connects: z.array(z.strictObject({ host: z.string(), port: z.number().int(), result: Outcome })),
@@ -112,7 +115,7 @@ export async function isolationProbe(params: ProbeParams): Promise<ProbeResult> 
           const [left = '', right = ''] = l.split(' - ');
           const f = left.split(' ');
           const r = right.split(' ');
-          return { mountPoint: unescape(f[4] ?? ''), options: f[5] ?? '', fsType: r[0] ?? '', source: unescape(r[1] ?? '') };
+          return { mountPoint: unescape(f[4] ?? ''), root: unescape(f[3] ?? ''), options: f[5] ?? '', fsType: r[0] ?? '', source: unescape(r[1] ?? '') };
         });
 
   const writes = params.writeTargets.map((dir) => {

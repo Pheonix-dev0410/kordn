@@ -45,6 +45,7 @@ describe('isolation probe', () => {
     expect(result?.uid).toBe(process.getuid?.());
     expect(result?.status.NoNewPrivs).toMatch(/^[01]$/);
     expect(result?.mounts?.some((m) => m.mountPoint === '/')).toBe(true);
+    expect(result?.mounts?.find((m) => m.mountPoint === '/proc')).toMatchObject({ root: '/', fsType: 'proc' });
     expect(result?.interfaces).toContain('lo');
     expect(result?.socket).toEqual({ connected: false, error: 'ENOENT', response: null });
   });
