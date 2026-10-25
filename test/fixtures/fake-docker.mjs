@@ -16,7 +16,7 @@ const out = (s) => process.stdout.write(s);
 
 switch (args[0]) {
   case 'info':
-    out('["name=seccomp,profile=builtin"]');
+    out('{"SecurityOptions":["name=seccomp,profile=builtin"],"Runtimes":{"runc":{"path":"runc"}}}');
     break;
   case 'image':
     out(JSON.stringify({ Id: `sha256:${'a'.repeat(64)}`, Config: { Entrypoint: ['/nodejs/bin/node'], Cmd: ['/app/sandbox/agent.mjs'], Env: [] } }));

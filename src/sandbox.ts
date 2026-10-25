@@ -329,6 +329,13 @@ async function removeContainer(docker: string, id: string): Promise<void> {
   if (r.code !== 0) process.emitWarning(`kordn contain: could not remove container ${id}: ${r.stderr.trim()}`);
 }
 
+/** The parts of `docker info` the checks read: security options and the runtime definitions. */
+export async function daemonInfo(docker = 'docker'): Promise<{ SecurityOptions?: unknown; Runtimes?: unknown }> {
+  return JSON.parse(
+    await dockerOk(docker, ['info', '--format', '{"SecurityOptions":{{json .SecurityOptions}},"Runtimes":{{json .Runtimes}}}']),
+  );
+}
+
 export async function runContain(o: ContainOptions): Promise<ContainResult> {
   const platform = o.platform ?? process.platform;
   if (platform !== 'linux') {
@@ -339,14 +346,13 @@ export async function runContain(o: ContainOptions): Promise<ContainResult> {
   if (!/^[A-Za-z0-9][A-Za-z0-9_.-]{0,62}$/.test(name)) throw new Error(`invalid container name ${JSON.stringify(name)}`);
   if (!IMAGE_REF.test(o.image)) throw new Error(`invalid image reference ${JSON.stringify(o.image)}`);
 
-  let securityOptions: unknown;
+  let info: { SecurityOptions?: unknown; Runtimes?: unknown };
   try {
-    securityOptions = JSON.parse(await dockerOk(docker, ['info', '--format', '{{json .SecurityOptions}}']));
+    info = await daemonInfo(docker);
   } catch (e) {
     throw new Error(`Docker is not available: ${(e as Error).message}`);
   }
-  const info = { SecurityOptions: securityOptions };
-  const rootless = Array.isArray(securityOptions) && securityOptions.includes('name=rootless');
+  const rootless = Array.isArray(info.SecurityOptions) && info.SecurityOptions.includes('name=rootless');
   // Resolve the tag once and run that exact image, so a re-tag in between can't swap it.
   const image = IMAGE.parse(JSON.parse(await dockerOk(docker, ['image', 'inspect', '--format', '{{json .}}', '--', o.image])));
   const entrypoint = image.Config.Entrypoint ?? [];

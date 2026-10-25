@@ -10,6 +10,7 @@ import { serveGuardianSocket } from '../src/guardian-socket.js';
 import {
   type ContainReport,
   checkContainer,
+  daemonInfo,
   hardenedRunFlags,
   hostAddresses,
   hostDockerSocketPaths,
@@ -30,7 +31,7 @@ import { buildSandboxImage, DOCKER_TESTS, docker, dockerOk, hostUser, leftovers,
 const policy = Policy.parse(policyJson);
 const image = testName('contain');
 const dirs: string[] = [];
-let info: { SecurityOptions: string[] };
+let info: { SecurityOptions?: unknown; Runtimes?: unknown };
 let rootless = false;
 let entrypoint: string[] = [];
 let imageEnv: string[] = [];
@@ -135,6 +136,8 @@ const variants: [string, Variant, CheckId[]][] = [
   ['label=disable', { edit: (f) => [...f, '--security-opt', 'label=disable'] }, ['hardening']],
   ['a device cgroup rule', { edit: (f) => [...f, '--device-cgroup-rule', 'a *:* rwm'] }, ['onlyGuardianSocket']],
   ['a /tmp tmpfs re-enabling exec, suid and dev', { edit: (f) => set(f, '--tmpfs', '/tmp:rw,nosuid,nodev,noexec,size=64m,exec,suid,dev') }, ['readOnlyRootfs']],
+  ['an OCI annotation', { edit: (f) => [...f, '--annotation', 'org.example.kordn-test=1'] }, ['hardening']],
+  ['a namespaced sysctl', { edit: (f) => [...f, '--sysctl', 'net.ipv4.ip_unprivileged_port_start=0'] }, ['hardening']],
   ['another runtime name (the containerd shim, outside the allowlist)', { edit: (f) => [...f, '--runtime', 'io.containerd.runc.v2'] }, ['hardening']],
   ['no resource limits', { edit: (f) => drop(f, '--pids-limit', '--memory', '--memory-swap', '--cpus') }, ['resourceLimits']],
   ['a variable injected with -e', { edit: (f) => [...f, '-e', 'API_TOKEN=s3cret'] }, ['noHostEnv']],
@@ -158,8 +161,8 @@ const variants: [string, Variant, CheckId[]][] = [
 describe.skipIf(!DOCKER_TESTS)('kordn contain (Docker)', () => {
   beforeAll(async () => {
     await buildSandboxImage(image);
-    info = { SecurityOptions: JSON.parse(await dockerOk(['info', '--format', '{{json .SecurityOptions}}'])) };
-    rootless = info.SecurityOptions.includes('name=rootless');
+    info = await daemonInfo();
+    rootless = Array.isArray(info.SecurityOptions) && info.SecurityOptions.includes('name=rootless');
     const config = JSON.parse(await dockerOk(['image', 'inspect', '--format', '{{json .Config}}', image]));
     entrypoint = config.Entrypoint;
     imageEnv = config.Env;

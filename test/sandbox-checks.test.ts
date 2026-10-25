@@ -82,7 +82,7 @@ describe('probeTargets', () => {
 type Facts = IsolationFacts & {
   inspect: typeof fixture.inspect;
   probe: ProbeResult;
-  info: { SecurityOptions: string[] };
+  info: { SecurityOptions: string[]; Runtimes: Record<string, Record<string, unknown>> };
 };
 
 /** The captured container as a rootless daemon would run it: the daemon reports rootless and
@@ -381,6 +381,37 @@ const cases: [string, (f: Facts) => void, CheckId[]][] = [
   ['a namespace missing from the probe', (f) => void delete f.probe.namespaces.cgroup, ['namespaces']],
   ['the rootless daemon socket visible inside', (f) => setPath(f, f.expectations.dockerSockets.at(-1) ?? '', 'present'), ['onlyGuardianSocket']],
 
+  // ---- review round 2 ----
+  [
+    'crun aliased in daemon.json to another binary',
+    (f) => {
+      f.inspect.HostConfig.Runtime = 'crun';
+      f.info.Runtimes = { ...f.info.Runtimes, crun: { path: '/opt/evil/runtime' } };
+    },
+    ['hardening'],
+  ],
+  [
+    'crun aliased with runtime args',
+    (f) => {
+      f.inspect.HostConfig.Runtime = 'crun';
+      f.info.Runtimes = { ...f.info.Runtimes, crun: { path: '/usr/bin/crun', runtimeArgs: ['--no-seccomp'] } };
+    },
+    ['hardening'],
+  ],
+  [
+    'runc redefined as a shim runtime type with options',
+    (f) => void (f.info.Runtimes = { ...f.info.Runtimes, runc: { runtimeType: 'io.containerd.runc.v2', options: { BinaryName: '/opt/evil/runc' } } }),
+    ['hardening'],
+  ],
+  ['the runtime missing from docker info', (f) => void delete f.info.Runtimes.runc, ['hardening']],
+  ['docker info without runtimes', (f) => void delete (f.info as { Runtimes?: unknown }).Runtimes, ['hardening']],
+  ['a real crun is fine', (f) => {
+    f.inspect.HostConfig.Runtime = 'crun';
+    f.info.Runtimes = { ...f.info.Runtimes, crun: { path: '/usr/bin/crun' } };
+  }, []],
+  ['an OCI annotation', (f) => void ((f.inspect.HostConfig as Record<string, unknown>).Annotations = { 'run.oci.keep_original_groups': '1' }), ['hardening']],
+  ['a sysctl', (f) => void ((f.inspect.HostConfig as Record<string, unknown>).Sysctls = { 'net.ipv4.ip_unprivileged_port_start': '0' }), ['hardening']],
+
   [
     'the guardian socket is unreachable',
     (f) => void (f.probe.socket = { connected: false, error: 'ECONNREFUSED', response: null }),
@@ -405,11 +436,11 @@ describe('evaluateIsolation', () => {
   });
 
   for (const [name, mutate, expected] of cases) {
-    it(`${name}: fails ${expected.join(' + ')}`, () => {
+    it(`${name}: ${expected.length ? `fails ${expected.join(' + ')}` : 'passes'}`, () => {
       const f = safe();
       mutate(f);
       expect(failing(f)).toEqual(expected);
-      expect(evaluateIsolation(f).mode).toBe('guard');
+      expect(evaluateIsolation(f).mode).toBe(expected.length ? 'guard' : 'contain');
     });
   }
 
@@ -456,10 +487,10 @@ describe('evaluateIsolation fails closed', () => {
     expect(failing(f)).toEqual([]);
   });
 
-  it('with unreadable docker info, rootless and seccomp fail', () => {
+  it('with unreadable docker info, rootless, seccomp and hardening fail', () => {
     const f = safe();
     f.info = null as never;
-    expect(failing(f)).toEqual(['rootless', 'seccomp']);
+    expect(failing(f)).toEqual(['rootless', 'seccomp', 'hardening']);
   });
 
   it('a probe that skipped its targets fails every check that needs them', () => {

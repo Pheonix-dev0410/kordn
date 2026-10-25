@@ -178,7 +178,12 @@ kordn contain: GUARD mode (linux, image sha256:…)
 Each check passes only if the container's **configuration** (`docker inspect` / `docker info`)
 and the **runtime evidence** from inside agree. If the probe produces no output or anything it
 can't parse, every runtime-backed check fails. So does a target the probe didn't report on.
-Anything not explicitly allowed fails: the checks deny by default.
+Where a setting can widen the sandbox, the checks allow an explicit list and fail anything else:
+security options, mounts, devices (and device cgroup rules and requests), tmpfs mounts, env
+variables, capabilities, namespaces, the OCI runtime and its daemon definition, OCI annotations
+and sysctls. Resource knobs outside pids, memory, swap and CPU are not checked: `--ulimit`,
+`--oom-score-adj`, `--oom-kill-disable` and similar can make the sandbox easier to
+exhaust, but not easier to leave.
 
 | Check | Configuration | Runtime (inside the container) |
 |---|---|---|
@@ -191,7 +196,7 @@ Anything not explicitly allowed fails: the checks deny by default.
 | `capabilities` | `--cap-drop ALL`, nothing added, not privileged | all five capability sets are zero, including the bounding set |
 | `noNewPrivileges` | `no-new-privileges` set | `NoNewPrivs: 1` |
 | `seccomp` | the daemon uses Docker's builtin profile (`name=seccomp,profile=builtin`); no per-container `seccomp=` option; not privileged. A custom profile, even a stricter one, means Guard | `Seccomp: 2` (filter active) |
-| `hardening` | security options are exactly `no-new-privileges` (so `systempaths=unconfined`, `apparmor=unconfined`, `label=disable` and profiles all fail; Docker adds `label=disable` itself for `--pid host`/`--ipc host`); Docker's default masked and read-only `/proc` and `/sys` paths present; runtime `runc` or `crun` | `/proc/sys` mounted read-only and `/proc/kcore` masked |
+| `hardening` | security options are exactly `no-new-privileges` (so `systempaths=unconfined`, `apparmor=unconfined`, `label=disable` and profiles all fail; Docker adds `label=disable` itself for `--pid host`/`--ipc host`); Docker's default masked and read-only `/proc` and `/sys` paths present; runtime `runc` or `crun`, and the daemon's definition of it (`docker info` Runtimes) is the plain binary (path basename `runc`/`crun`, no runtimeType, runtimeArgs or options); no OCI annotations; no sysctls | `/proc/sys` mounted read-only and `/proc/kcore` masked |
 | `namespaces` | pid, uts, user and cgroup namespaces not `host` or another container's; IPC mode `none` | PID 1 is the sandbox's own idle process; no `/dev/shm`; each of its cgroup, ipc, mnt, net, pid, user and uts namespaces differs from the launcher's and from the kernel's initial one (fixed inode numbers, so this holds even if the launcher runs in its own namespaces) |
 | `resourceLimits` | pids ≤ 64, memory ≤ 512m, swap = memory (no extra), cpus ≤ 1 | `pids.max` and `memory.max` set within those limits |
 | `hostServicesUnreachable` | n/a | the canary and the admin UI port on `127.0.0.1` and `::1` can't be reached, and the host-side canary saw no connections; the guardian DB path, if given, doesn't exist |
@@ -247,6 +252,8 @@ exactly which checks fail:
 - a device cgroup rule
 - a `/tmp` tmpfs re-enabling `exec,suid,dev`
 - a runtime outside the allowlist
+- an OCI annotation (`--annotation`)
+- a namespaced sysctl (`--sysctl`)
 - `--pid host`
 - `--ipc host`
 - `--ipc private` (with `/dev/shm`)
@@ -256,5 +263,6 @@ exactly which checks fail:
 - a forwarded SSH agent
 - a uid that can't open the `0600` socket
 
-A daemon-wide custom seccomp profile would mean reconfiguring the daemon, and other OCI runtimes
-(gVisor's `runsc`, Kata) aren't installed here, so those are covered by unit fixtures only.
+A daemon-wide custom seccomp profile or a `daemon.json` runtime alias would mean reconfiguring
+the daemon, and other OCI runtimes (gVisor's `runsc`, Kata) aren't installed here, so those are
+covered by unit fixtures only.

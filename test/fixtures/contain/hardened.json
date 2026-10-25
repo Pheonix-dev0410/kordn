@@ -36,7 +36,15 @@
     "SecurityOptions": [
       "name=seccomp,profile=builtin",
       "name=cgroupns"
-    ]
+    ],
+    "Runtimes": {
+      "io.containerd.runc.v2": {
+        "path": "runc"
+      },
+      "runc": {
+        "path": "runc"
+      }
+    }
   },
   "inspect": {
     "Id": "de61418c6d951fbbac8d18a3bc96be62c6553d2b70a0fce7fe4cdc5017a4318a",

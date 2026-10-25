@@ -159,7 +159,11 @@ const INITIAL_NAMESPACE_INODES: Record<string, number> = {
   mnt: 0xeffffff8,
 };
 
-const Info = z.object({ SecurityOptions: z.array(z.string()) });
+/** `docker info`: SecurityOptions, and Runtimes (name -> { path, runtimeType, runtimeArgs, options, status }). */
+const Info = z.object({
+  SecurityOptions: z.array(z.string()),
+  Runtimes: z.record(z.string(), z.record(z.string(), z.unknown())).optional(),
+});
 
 const Inspect = z.object({
   Id: z.string(),
@@ -188,6 +192,8 @@ const Inspect = z.object({
     UTSMode: z.string(),
     UsernsMode: z.string(),
     CgroupnsMode: z.string().optional(),
+    Annotations: z.record(z.string(), z.string()).nullable().optional(),
+    Sysctls: z.record(z.string(), z.string()).nullable().optional(),
   }),
   Mounts: z.array(z.object({ Type: z.string(), Source: z.string(), Destination: z.string(), RW: z.boolean() })),
   NetworkSettings: z.object({ Networks: z.record(z.string(), z.unknown()).nullable() }),
@@ -271,6 +277,27 @@ function namespaceProblems(kind: string, link: string | undefined, launcher: str
   if (link === launcher) return [`shares the launcher's ${kind} namespace`];
   if (Number(m[2]) === INITIAL_NAMESPACE_INODES[kind]) return [`in the host's initial ${kind} namespace`];
   return [];
+}
+
+/**
+ * The runtime name must be allowed AND the daemon's definition of it must be the plain binary:
+ * daemon.json can map "crun" to any path, a shim runtimeType with options, or extra args.
+ */
+function runtimeProblems(name: string, runtimes: Record<string, Record<string, unknown>> | undefined): Problems {
+  if (!ALLOWED_RUNTIMES.includes(name)) return [`runtime ${name} is not one of ${ALLOWED_RUNTIMES.join(', ')}`];
+  const entry = runtimes && Object.hasOwn(runtimes, name) ? runtimes[name] : undefined;
+  if (!entry) return [`runtime ${name} is not described by docker info`];
+  const problems: Problems = [];
+  const path = entry.path;
+  if (typeof path !== 'string' || !ALLOWED_RUNTIMES.includes(path.split('/').at(-1) ?? '')) {
+    problems.push(`runtime ${name} runs ${JSON.stringify(path ?? null)}`);
+  }
+  for (const field of ['runtimeType', 'runtimeArgs', 'options']) {
+    const v = entry[field];
+    const empty = v === undefined || v === null || v === '' || (Array.isArray(v) && v.length === 0);
+    if (!empty) problems.push(`runtime ${name} has a custom ${field}`);
+  }
+  return problems;
 }
 
 type CheckFn = (ctx: Ctx) => { problems: Problems; ok: string };
@@ -455,7 +482,10 @@ const CHECKS: Record<CheckId, CheckFn> = {
           ...(sameList(securityOpt, SECURITY_OPTS) ? [] : [`security options are ${JSON.stringify(securityOpt)}, not ${JSON.stringify(SECURITY_OPTS)}`]),
           ...(unmasked.length ? [`not masked: ${unmasked.join(', ')}`] : []),
           ...(writable.length ? [`not read-only: ${writable.join(', ')}`] : []),
-          ...(ALLOWED_RUNTIMES.includes(h.Runtime) ? [] : [`runtime ${h.Runtime} is not one of ${ALLOWED_RUNTIMES.join(', ')}`]),
+          ...runtimeProblems(h.Runtime, ctx.info?.Runtimes),
+          // Annotations reach the OCI runtime; sysctls change kernel settings for the container.
+          ...(Object.keys(h.Annotations ?? {}).length ? [`annotations set: ${Object.keys(h.Annotations ?? {}).join(', ')}`] : []),
+          ...(Object.keys(h.Sysctls ?? {}).length ? [`sysctls set: ${Object.keys(h.Sysctls ?? {}).join(', ')}`] : []),
         ];
       }),
       ...probeOrMissing(ctx, (p) => {
