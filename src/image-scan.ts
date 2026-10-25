@@ -51,12 +51,56 @@ const TEXT_RULES: [RegExp, string][] = [
   [/\bglpat-[A-Za-z0-9_-]{20,}/, 'GitLab token'],
   [/\bAIza[0-9A-Za-z_-]{35}\b/, 'Google API key'],
   [/\bnpm_[A-Za-z0-9]{36}\b|_authToken\s*=/, 'npm auth token'],
-  // A *_URL variable whose value carries user and password before the host.
-  [/\b[A-Za-z][A-Za-z0-9_]*_URL\s*[=:]\s*["']?[A-Za-z][A-Za-z0-9+.-]*:\/\/[^\s:@/"']+:[^\s@/"']+@/, 'credentials in a URL'],
+  // A *_URL, _URI, _DSN or _CONNECTION_STRING variable whose value carries a password (the user may
+  // be empty) before the host.
+  [
+    /\b[a-z][a-z0-9_]*_(URL|URI|DSN|CONNECTION_STRING)\s*[=:]\s*["']?[a-z][a-z0-9+.-]*:\/\/[^\s:@/"']*:[^\s@/"']+@/i,
+    'credentials in a URL',
+  ],
 ];
 
-/** A variable name made of _-separated words, one of which says it holds a secret. */
-const SECRET_NAME = /(^|_)(TOKEN|SECRET|PASS|PASSWORD|PASSWD|CREDENTIALS?|API_?KEY|PRIVATE_?KEY|ACCESS_?KEY)(_|$)/i;
+/** Words that mark a secret anywhere in a name, also glued to another word (MYTOKEN, PGPASSWORD). */
+const SECRET_SUFFIXES = [
+  'TOKEN',
+  'TOKENS',
+  'SECRET',
+  'SECRETS',
+  'PASSWORD',
+  'PASSWORDS',
+  'PASSWD',
+  'PASSPHRASE',
+  'CREDENTIAL',
+  'CREDENTIALS',
+  'APIKEY',
+  'PRIVATEKEY',
+  'ACCESSKEY',
+];
+/** Words that mark a secret only as the last word (STRIPE_KEY, GOOGLE_AUTH, DB_PW), so KEYBOARD, AUTHOR
+ * and PWD stay clean. */
+const SECRET_FINAL_WORDS = ['KEY', 'AUTH', 'PW'];
+
+/** Splits a variable name into upper-cased words on `_`, other separators, case changes and digits. */
+function nameWords(name: string): string[] {
+  return name
+    .replace(/([a-z])([A-Z])/g, '$1_$2')
+    .replace(/([A-Za-z])([0-9])/g, '$1_$2')
+    .replace(/([0-9])([A-Za-z])/g, '$1_$2')
+    .split(/[^A-Za-z0-9]+|_/)
+    .filter((w) => w !== '')
+    .map((w) => w.toUpperCase());
+}
+
+/** Does this variable name say it holds a secret? PASS_THROUGH and NO_PASS are flagged too: that fails closed. */
+export function isSecretName(name: string): boolean {
+  const words = nameWords(name);
+  const last = words.at(-1) ?? '';
+  return (
+    words.some((w) => w === 'PASS' || SECRET_SUFFIXES.some((s) => w.endsWith(s))) ||
+    words.some((w, i) => ['API', 'PRIVATE', 'ACCESS'].includes(w) && words[i + 1] === 'KEY') ||
+    SECRET_FINAL_WORDS.includes(last)
+  );
+}
+
 const ASSIGNED_NAMES = /([A-Za-z_][A-Za-z0-9_]*)=/g;
 
 export function checkPath(path: string): string | null {
@@ -89,7 +133,7 @@ export function checkConfig(config: { env: string[]; labels: Record<string, stri
   const check = (where: string, text: string) => {
     for (const reason of checkText(text)) findings.push({ where, reason });
     const names = [...text.matchAll(ASSIGNED_NAMES)].map((m) => m[1] ?? '');
-    if (names.some((n) => SECRET_NAME.test(n))) findings.push({ where, reason: 'secret-named assignment' });
+    if (names.some(isSecretName)) findings.push({ where, reason: 'secret-named assignment' });
   };
   for (const e of config.env) {
     // The name alone decides: an empty, blank or newline-led value is still a secret slot.
@@ -98,8 +142,11 @@ export function checkConfig(config: { env: string[]; labels: Record<string, stri
       findings.push({ where: 'env SSH_AUTH_SOCK', reason: 'SSH agent socket' });
       continue;
     }
-    if (SECRET_NAME.test(name)) findings.push({ where: `env ${name}`, reason: 'secret-named variable' });
+    if (isSecretName(name)) findings.push({ where: `env ${name}`, reason: 'secret-named variable' });
     for (const reason of checkText(e)) findings.push({ where: `env ${name}`, reason });
+    // FOO="bar GITHUB_TOKEN=abc": a secret assignment hidden in another variable's value.
+    const valueNames = [...e.slice(name.length + 1).matchAll(ASSIGNED_NAMES)].map((m) => m[1] ?? '');
+    if (valueNames.some(isSecretName)) findings.push({ where: `env ${name}`, reason: 'secret-named assignment' });
   }
   for (const [k, v] of Object.entries(config.labels)) check(`label ${k}`, `${k}=${v}`);
   config.history.forEach((line, i) => check(`history[${i}]`, line));

@@ -3,7 +3,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { gzipSync, zstdCompressSync } from 'node:zlib';
 import { afterEach, describe, expect, it } from 'vitest';
-import { checkConfig, checkPath, checkText, createTextScanner, parseHistory, scanImageArchive } from '../src/image-scan.js';
+import { checkConfig, checkPath, checkText, createTextScanner, isSecretName, parseHistory, scanImageArchive } from '../src/image-scan.js';
 
 const dirs: string[] = [];
 afterEach(() => {
@@ -233,5 +233,61 @@ describe('scanImageArchive limits', () => {
   it('refuses an unrecognised blob over the size limit instead of skipping it', async () => {
     const file = archive(entry('blobs/sha256/aaa', Buffer.alloc(4 * 1024 * 1024 + 1, 'z')));
     await expect(scanImageArchive(file)).rejects.toThrow(/unrecognised blob/);
+  });
+});
+
+describe('isSecretName', () => {
+  it('flags secret words however the name is written', () => {
+    for (const n of [
+      'PGPASSWORD',
+      'SECRETS',
+      'TOKENS',
+      'MYTOKEN',
+      'GITHUBTOKEN',
+      'githubToken',
+      'authToken',
+      'dbPassword',
+      'DB_PASS',
+      'API_KEY',
+      'APIKEY',
+      'AWS_SECRET_ACCESS_KEY',
+      'STRIPE_KEY',
+      'SIGNING_KEY',
+      'GPG_PASSPHRASE',
+      'GOOGLE_AUTH',
+      'DB_PW',
+      'Token2',
+      'OAUTH2_TOKEN',
+      'stripeKey',
+      'dbPw',
+    ]) {
+      expect(isSecretName(n), n).toBe(true);
+    }
+  });
+
+  it('leaves ordinary names alone', () => {
+    for (const n of ['TOKENIZER_PATH', 'PASSPORT', 'BYPASS', 'PATH', 'HOME', 'NODE_ENV', 'SSL_CERT_FILE', 'KEYBOARD', 'MONKEY', 'AUTHOR', 'PWD', 'HOSTNAME']) {
+      expect(isSecretName(n), n).toBe(false);
+    }
+  });
+});
+
+describe('checkConfig: embedded assignments and URL credentials', () => {
+  const env = (...e: string[]) => checkConfig({ env: e, labels: {}, history: [] });
+
+  it('finds a secret assignment embedded in another variable', () => {
+    expect(env('FOO=bar GITHUB_TOKEN=abc')).toEqual([{ where: 'env FOO', reason: 'secret-named assignment' }]);
+  });
+
+  it('flags URL credentials with an empty user, other suffixes and any case', () => {
+    for (const e of [
+      'REDIS_URL=redis://:pw@cache:6379',
+      'DATABASE_URI=postgres://u:p@db/x',
+      'SENTRY_DSN=https://k:s@sentry.example/1',
+      'DB_CONNECTION_STRING=mysql://u:p@db/x',
+      'database_url=postgres://u:p@db/x',
+    ]) {
+      expect(env(e), e).toEqual([{ where: `env ${e.split('=')[0]}`, reason: 'credentials in a URL' }]);
+    }
   });
 });
