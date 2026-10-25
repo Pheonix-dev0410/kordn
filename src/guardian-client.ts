@@ -16,6 +16,8 @@ export const DEFAULT_MAX_CONCURRENT = 16;
 // Replies can carry 20 transactions of untrusted text, so allow more than a request frame.
 const MAX_REPLY_BYTES = 1024 * 1024;
 const MAX_TOOL_CHARS = 64;
+// Node clamps a longer timer to 1 ms, which would fail every call at once.
+const MAX_TIMER_MS = 2 ** 31 - 1;
 
 const Reply = z.union([
   z.strictObject({ v: z.literal(1), id: z.string(), ok: z.literal(true), result: z.unknown() }),
@@ -45,6 +47,7 @@ export function createGuardianClient(socketPath: string, options: GuardianClient
   const maxConcurrent = options.maxConcurrent ?? DEFAULT_MAX_CONCURRENT;
   // 0 or NaN would queue every call until it times out.
   if (!Number.isSafeInteger(maxConcurrent) || maxConcurrent < 1) throw new RangeError(`invalid maxConcurrent: ${maxConcurrent}`);
+  if (!Number.isInteger(timeoutMs) || timeoutMs < 1 || timeoutMs > MAX_TIMER_MS) throw new RangeError(`invalid timeoutMs: ${timeoutMs}`);
 
   const queue: (() => void)[] = [];
   let active = 0;
@@ -57,6 +60,15 @@ export function createGuardianClient(socketPath: string, options: GuardianClient
 
   return (_agentId, tool, args) =>
     new Promise<CallResult>((resolve) => {
+      // Encoded before queueing: args JSON can't encode (a BigInt, a cycle) fail here, before
+      // a slot is taken. Over MCP args are parsed JSON, so only direct callers can hit this.
+      const id = randomUUID();
+      let frame: string;
+      try {
+        frame = encodeFrame(id, tool, args);
+      } catch {
+        return resolve(UNAVAILABLE);
+      }
       let socket: Socket | undefined;
       let settled = false;
       const finish = (result: CallResult) => {
@@ -78,8 +90,7 @@ export function createGuardianClient(socketPath: string, options: GuardianClient
       // Started now, not at dispatch: a hung guardian fails queued calls on time too.
       const timer = setTimeout(() => finish(UNAVAILABLE), timeoutMs);
       const start = () => {
-        const id = randomUUID();
-        socket = exchange(socketPath, id, encodeFrame(id, tool, args), finish);
+        socket = exchange(socketPath, id, frame, finish);
       };
       queue.push(start);
       pump();

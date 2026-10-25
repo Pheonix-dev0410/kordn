@@ -2,7 +2,7 @@ import { mkdtempSync } from 'node:fs';
 import { createServer, type Server, type Socket } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import policyJson from '../examples/policy.json' with { type: 'json' };
 import { createFakeGuardian } from '../src/fake-guardian.js';
 import { createGuardianClient } from '../src/guardian-client.js';
@@ -149,6 +149,22 @@ describe('guardian socket client concurrency', () => {
     }
   });
 
+  it('rejects a timeoutMs that is not a positive integer a timer can hold', () => {
+    for (const timeoutMs of [0, -1, 1.5, Number.NaN, Number.POSITIVE_INFINITY, 2 ** 31]) {
+      expect(() => createGuardianClient('/tmp/x.sock', { timeoutMs })).toThrow(RangeError);
+    }
+    expect(() => createGuardianClient('/tmp/x.sock', { timeoutMs: 2 ** 31 - 1 })).not.toThrow();
+  });
+
+  it('fails a call whose args cannot be encoded without leaking its slot', async () => {
+    const { path, guardian } = await startGuardian();
+    const handleCall = createGuardianClient(path, { maxConcurrent: 1 });
+    expect(await handleCall('a', 'af_get_balance', { resourceId: policy.resourceId, n: 1n })).toEqual(unavailable);
+    // With one slot, a leaked slot would leave this call queued until it timed out.
+    expect(await handleCall('a', 'af_get_balance', { resourceId: policy.resourceId })).toMatchObject({ ok: true });
+    expect(await guardian.listActivity({ events: ['read.executed'] })).toHaveLength(1);
+  });
+
   it('answers and logs 40 concurrent calls, staying under the socket connection cap', async () => {
     const path = socketPath();
     const guardian = createFakeGuardian({ policy });
@@ -193,19 +209,32 @@ describe('guardian socket client concurrency', () => {
   it('fails queued calls closed when the guardian hangs, without leaking sockets', async () => {
     const open = new Set<Socket>();
     let peak = 0;
+    let total = 0;
     const path = await startRaw((socket) => {
+      total += 1;
       open.add(socket);
       peak = Math.max(peak, open.size);
       socket.on('close', () => open.delete(socket));
       socket.resume(); // read (and ignore) the frame, so the client's hang-up is seen
     });
-    const handleCall = createGuardianClient(path, { timeoutMs: 200, maxConcurrent: 2 });
-    const started = Date.now();
-    const results = await Promise.all(Array.from({ length: 6 }, () => handleCall('a', 'af_get_balance', {})));
+    // Fake only the call timers, so all six expire at the same instant. With real timers a
+    // queued call created a millisecond later can be dispatched just before it expires.
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    let results: unknown[];
+    try {
+      const handleCall = createGuardianClient(path, { timeoutMs: 200, maxConcurrent: 2 });
+      const pending = Promise.all(Array.from({ length: 6 }, () => handleCall('a', 'af_get_balance', {})));
+      while (total < 2) await new Promise((resolve) => setImmediate(resolve));
+      // One timeout's worth of time settles every call: queued time counts against the timeout.
+      vi.advanceTimersByTime(200);
+      results = await pending;
+    } finally {
+      vi.useRealTimers();
+    }
     expect(results).toEqual(Array.from({ length: 6 }, () => unavailable));
-    // The timeout counts time spent queued: nobody waits for a slot and then a full timeout more.
-    expect(Date.now() - started).toBeLessThan(1000);
     expect(peak).toBeLessThanOrEqual(2);
+    // Only the two dispatched calls ever connected: the four that timed out in the queue never did.
+    expect(total).toBe(2);
     for (let i = 0; i < 50 && open.size > 0; i++) await new Promise((resolve) => setTimeout(resolve, 10));
     expect(open.size).toBe(0);
   });
