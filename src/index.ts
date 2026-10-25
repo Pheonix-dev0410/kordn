@@ -79,17 +79,20 @@ function parse(argv: string[]): Options {
 }
 
 /**
- * Host checks compare the Host header's hostname, so a value with a port, scheme or path,
- * or an unbracketed IPv6 address, could never match. Refuse it rather than ignore it.
+ * Host checks compare the Host header's hostname exactly, so a value with a port, scheme,
+ * path or wildcard, or an unbracketed IPv6 address, could never match. Refuse it rather
+ * than ignore it.
  */
 function allowedHost(value: string): string {
+  const lower = value.toLowerCase();
   let hostname: string | undefined;
   try {
-    hostname = new URL(`http://${value}`).hostname;
+    hostname = new URL(`http://${lower}`).hostname;
   } catch {
     hostname = undefined;
   }
-  if (value === '' || hostname !== value.toLowerCase()) {
+  const shape = /^[a-z0-9.-]+$/.test(lower) || /^\[[0-9a-f:.]+\]$/.test(lower);
+  if (!shape || hostname !== lower) {
     throw new UsageError('--allowed-host takes a bare hostname, e.g. kordn.example.net or [::1]');
   }
   return hostname;
