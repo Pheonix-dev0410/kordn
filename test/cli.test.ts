@@ -35,15 +35,24 @@ async function stdioClient(args: string[] = [], versionNegotiation?: { mode: { p
   return client;
 }
 
-/** Run the CLI to exit. Resolves with its code and output. */
+// Long enough for a cold start, short enough that a CLI which wrongly keeps running
+// (e.g. starts serving instead of refusing) fails fast instead of hanging the suite.
+const DEADLINE_MS = 3000;
+
+/** Run the CLI to exit, killing it at the deadline. Resolves with its code and output. */
 function run(args: string[], env: Record<string, string> = {}): Promise<{ code: number | null; stdout: string; stderr: string }> {
   return new Promise((done) => {
     const child = spawn(process.execPath, [cli, ...args], { env: { PATH: process.env.PATH ?? '', ...env }, stdio: ['ignore', 'pipe', 'pipe'] });
+    const timer = setTimeout(() => child.kill('SIGKILL'), DEADLINE_MS);
+    cleanup.push(() => child.kill('SIGKILL'));
     let stdout = '';
     let stderr = '';
     child.stdout.on('data', (d) => (stdout += d));
     child.stderr.on('data', (d) => (stderr += d));
-    child.on('close', (code) => done({ code, stdout, stderr }));
+    child.on('close', (code) => {
+      clearTimeout(timer);
+      done({ code, stdout, stderr });
+    });
   });
 }
 
@@ -120,8 +129,9 @@ describe('kordn CLI', () => {
       env: { PATH: process.env.PATH ?? '', KORDN_TOKEN: token },
       stdio: ['ignore', 'pipe', 'pipe'],
     });
-    cleanup.push(() => child.kill());
+    cleanup.push(() => child.kill('SIGKILL'));
     const url = await new Promise<string>((found, fail) => {
+      setTimeout(() => fail(new Error('no URL printed before the deadline')), DEADLINE_MS);
       let stderr = '';
       child.stderr.on('data', (d) => {
         stderr += d;
