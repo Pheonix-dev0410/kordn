@@ -80,6 +80,26 @@ describe('guardian socket client', () => {
     expect(await handleCall('a', 'af_get_balance', { resourceId: policy.resourceId })).toEqual(unavailable);
   });
 
+  it('answers a second call while the first is stuck on a hung guardian connection', async () => {
+    let hung: Socket | undefined;
+    const path = await startRaw((socket) => {
+      if (!hung) return void (hung = socket); // the first connection never gets a reply
+      socket.setEncoding('utf8');
+      socket.once('data', (line: string) => {
+        const { id } = JSON.parse(line) as { id: string };
+        socket.end(`${JSON.stringify({ v: 1, id, ok: true, result: { second: true } })}\n`);
+      });
+    });
+    const handleCall = createGuardianClient(path, { timeoutMs: 5000 });
+    let firstSettled = false;
+    const first = handleCall('a', 'af_get_balance', {}).finally(() => (firstSettled = true));
+    while (!hung) await new Promise((resolve) => setTimeout(resolve, 5));
+    expect(await handleCall('a', 'af_get_balance', {})).toEqual({ ok: true, result: { second: true } });
+    expect(firstSettled).toBe(false);
+    hung.destroy();
+    expect(await first).toEqual(unavailable);
+  });
+
   it('times out a guardian that never answers', async () => {
     const path = await startRaw(() => {});
     const started = Date.now();
