@@ -92,7 +92,7 @@ npm run typecheck
 npm test
 ```
 
-Work happens on `track/core` (guardian, policy, ledger) and `track/boundary` (MCP server, sandbox, admin UI) and is merged into `main` once both are done. Branch off your track, open PRs into it, and link the issue.
+Make a branch for each issue, open a pull request into `main`, and link the issue.
 
 ## License
 
