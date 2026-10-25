@@ -8,6 +8,8 @@ describe('hardened run flags', () => {
     expect(flags).toEqual([
       '--network',
       'none',
+      '--ipc',
+      'none',
       '--read-only',
       '--cap-drop',
       'ALL',

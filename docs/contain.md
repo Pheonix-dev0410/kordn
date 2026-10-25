@@ -51,7 +51,8 @@ is `/nodejs/bin/node`.
 |---|---|
 | `--network none` | No interface besides loopback, so there's no route to the bank, the admin UI or the internet |
 | `--read-only` | The root filesystem can't be changed |
-| `--tmpfs /tmp:rw,nosuid,nodev,noexec,size=64m` | The only writable scratch space. It's in memory and disappears with the container |
+| `--ipc none` | Own IPC namespace with no `/dev/shm` mount, so there's no shared memory with anything else |
+| `--tmpfs /tmp:rw,nosuid,nodev,noexec,size=64m` | The only place the agent can write files (`/dev` and `/dev/pts` are root-owned, and there is no `/dev/shm`). It's in memory and disappears with the container |
 | `--cap-drop ALL` | No Linux capabilities, including the bounding set |
 | `--security-opt no-new-privileges` | setuid binaries and file capabilities can't raise privileges |
 | `--pids-limit 64 --memory 512m --memory-swap 512m --cpus 1` | Resource limits. No swap on top of the memory limit |

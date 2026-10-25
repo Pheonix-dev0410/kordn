@@ -24,6 +24,9 @@ export function hardenedRunFlags({ socketPath, user }: RunFlagOptions): string[]
   return [
     '--network',
     'none',
+    // No IPC namespace sharing and no /dev/shm: /tmp stays the only writable scratch space.
+    '--ipc',
+    'none',
     '--read-only',
     '--cap-drop',
     'ALL',

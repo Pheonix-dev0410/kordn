@@ -105,7 +105,7 @@ describe.skipIf(!DOCKER_TESTS)('sandbox image (Docker)', () => {
   it('contains no secrets in any layer, env, label or history entry', async () => {
     const scan = await scanImage(image);
     expect(scan.layers).toBeGreaterThan(3);
-    expect(scan.files).toBeGreaterThan(100);
+    expect(scan.entries).toBeGreaterThan(100);
     expect(scan.findings).toEqual([]);
   }, 300_000);
 
@@ -116,7 +116,7 @@ describe.skipIf(!DOCKER_TESTS)('sandbox image (Docker)', () => {
     writeFileSync(join(ctx, 'Dockerfile'), `FROM ${image}\nCOPY .env /app/.env\nCOPY notes.txt /app/notes.txt\nENV NPM_TOKEN=npm-secret\n`);
     await dockerOk(['build', '-q', '-t', leaky, ctx], undefined, 300_000);
     const reasons = (await scanImage(leaky)).findings.map((f) => `${f.where.replace(/^.*:/, '')} ${f.reason}`);
-    expect(reasons).toEqual(expect.arrayContaining(['app/.env env file', 'app/notes.txt GitHub token', 'env NPM_TOKEN secret-named assignment']));
+    expect(reasons).toEqual(expect.arrayContaining(['app/.env env file', 'app/notes.txt GitHub token', 'env NPM_TOKEN secret-named variable']));
   }, 300_000);
 
   it('keeps env files, VCS data, databases, deps and other junk out of the build context', async () => {
@@ -190,11 +190,17 @@ describe.skipIf(!DOCKER_TESTS)('sandbox image (Docker)', () => {
     });
 
     it('has only the guardian socket mounted from the host', () => {
-      const docker = new Set(['/', '/proc', '/dev', '/dev/pts', '/sys', '/sys/fs/cgroup', '/dev/mqueue', '/dev/shm', '/tmp', '/etc/hostname', '/etc/hosts', '/etc/resolv.conf']);
+      const docker = new Set(['/', '/proc', '/dev', '/dev/pts', '/sys', '/sys/fs/cgroup', '/dev/mqueue', '/tmp', '/etc/hostname', '/etc/hosts', '/etc/resolv.conf']);
       const extra = (probe?.mounts ?? [])
         .map((m) => m.mountPoint)
         .filter((p) => !docker.has(p) && !p.startsWith('/proc/') && !p.startsWith('/sys/'));
       expect(extra).toEqual([SANDBOX_SOCKET]);
+    });
+
+    it('has no shared memory mount (--ipc none), so /tmp is the only writable place', () => {
+      expect(probe?.mounts?.some((m) => m.mountPoint === '/dev/shm')).toBe(false);
+      const writable = (probe?.mounts ?? []).filter((m) => m.options.split(',').includes('rw') && !['/proc', '/dev', '/dev/pts', '/dev/mqueue', '/sys'].includes(m.mountPoint) && !m.mountPoint.startsWith('/proc/'));
+      expect(writable.map((m) => m.mountPoint)).toEqual(['/tmp']);
     });
 
     it('has a read-only root filesystem', () => {
