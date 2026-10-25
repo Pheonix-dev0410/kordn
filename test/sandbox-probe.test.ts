@@ -1,5 +1,5 @@
 import { spawn } from 'node:child_process';
-import { chmodSync, mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, mkdirSync, mkdtempSync, readdirSync, readlinkSync, rmSync, writeFileSync } from 'node:fs';
 import { createServer, type Server } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -48,6 +48,14 @@ describe('isolation probe', () => {
     expect(result?.mounts?.find((m) => m.mountPoint === '/proc')).toMatchObject({ root: '/', fsType: 'proc' });
     expect(result?.interfaces).toContain('lo');
     expect(result?.socket).toEqual({ connected: false, error: 'ENOENT', response: null });
+  });
+
+  it('reports the namespace of each kind it lives in', async () => {
+    const result = parseProbeOutput(await runProbe(base));
+    expect(Object.keys(result?.namespaces ?? {}).sort()).toEqual(['cgroup', 'ipc', 'mnt', 'net', 'pid', 'user', 'uts']);
+    for (const ns of ['cgroup', 'ipc', 'mnt', 'net', 'pid', 'user', 'uts']) {
+      expect(result?.namespaces[ns], ns).toBe(readlinkSync(`/proc/self/ns/${ns}`));
+    }
   });
 
   it('reports env var names but never their values', async () => {

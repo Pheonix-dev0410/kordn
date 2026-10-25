@@ -6,9 +6,6 @@ import { z } from 'zod';
 // Its output comes from inside the untrusted boundary: parse it strictly and treat any
 // missing or odd field as a failed check.
 
-/** Where the guardian socket appears inside the container. */
-export const SANDBOX_SOCKET = '/run/kordn.sock';
-
 export interface ProbeParams {
   /** Socket path inside the container. Connect only, unless `call` is given. */
   socketPath: string;
@@ -47,6 +44,8 @@ export const ProbeResult = z.strictObject({
   pidsMax: Outcome,
   memoryMax: Outcome,
   pid1: Lines,
+  /** readlink of /proc/self/ns/<kind>, e.g. "net:[4026531833]", or "error:<code>". */
+  namespaces: z.record(z.string(), Outcome),
   socket: z.strictObject({ connected: z.boolean(), error: Outcome.nullable(), response: z.unknown() }),
 });
 export type ProbeResult = z.infer<typeof ProbeResult>;
@@ -188,6 +187,14 @@ export async function isolationProbe(params: ProbeParams): Promise<ProbeResult> 
   });
 
   const pid1 = read('/proc/1/cmdline');
+  const namespaces: Record<string, string> = {};
+  for (const ns of ['cgroup', 'ipc', 'mnt', 'net', 'pid', 'user', 'uts']) {
+    try {
+      namespaces[ns] = fs.readlinkSync(`/proc/self/ns/${ns}`);
+    } catch (e) {
+      namespaces[ns] = `error:${code(e)}`;
+    }
+  }
 
   return {
     uid: process.getuid?.() ?? -1,
@@ -205,6 +212,7 @@ export async function isolationProbe(params: ProbeParams): Promise<ProbeResult> 
     pidsMax: orError('/sys/fs/cgroup/pids.max'),
     memoryMax: orError('/sys/fs/cgroup/memory.max'),
     pid1: pid1 === null ? null : pid1.split('\0').filter((a) => a !== ''),
+    namespaces,
     socket,
   };
 }
