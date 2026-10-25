@@ -8,7 +8,14 @@ import { join } from 'node:path';
 export const DOCKER_TESTS = process.env.KORDN_DOCKER_TESTS === '1';
 export const ROOT = join(import.meta.dirname, '..');
 
-export const testName = (what: string) => `kordn-test-${what}-${randomBytes(4).toString('hex')}`;
+/** Names made by this test file. Vitest loads this module once per file. */
+const made = new Set<string>();
+
+export function testName(what: string): string {
+  const name = `kordn-test-${what}-${randomBytes(4).toString('hex')}`;
+  made.add(name);
+  return name;
+}
 
 export interface Run {
   code: number | null;
@@ -53,9 +60,9 @@ export function hostUser(): string {
   return `${process.getuid?.()}:${process.getgid?.()}`;
 }
 
-/** Ensures nothing named kordn-test-* is left by a test run. */
+/** Containers this test file created that still exist (other files may run in parallel). */
 export async function leftovers(): Promise<string[]> {
   const containers = await dockerOk(['ps', '-a', '--filter', 'name=kordn-test-', '--format', '{{.Names}}']);
-  return containers.split('\n').filter(Boolean);
+  return containers.split('\n').filter((n) => made.has(n));
 }
 
