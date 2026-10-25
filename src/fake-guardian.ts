@@ -10,6 +10,7 @@ import type {
 import { requestHash } from './hash.js';
 import { CHECKING_ACCOUNT, FIXTURE_EPOCH_MS, TRANSACTIONS, transactionDate } from './mock-bank.js';
 import {
+  APPROVAL_TTL_SEC,
   type AuditEvent,
   type DenyCode,
   parseToolCall,
@@ -17,13 +18,17 @@ import {
   type State,
   ToolName,
   type TransferCall,
+  type TransferReasonCode,
 } from './schema.js';
 
 // In-memory stand-in for the guardian (#6) so the MCP server and admin UI can be built
-// and tested before it lands. Enforces only payee, single limit and approval threshold.
-// No ledger, no rolling limits, no persistence. Not a security boundary.
+// and tested before it lands. Enforces the per-call rules (agent, resource, allow flags,
+// payee, single limit, lookback, approval threshold) and idempotency keys. No ledger, no
+// rolling limits, no persistence. Not a security boundary.
+//
+// Transfers jump straight from RESERVED or PENDING_APPROVAL to SUCCEEDED: there is no
+// executor, so a UI built on this never sees APPROVED or DISPATCHING. The real one does.
 
-const APPROVAL_TTL_MS = 15 * 60_000;
 const DEFAULT_ACTIVITY_LIMIT = 100;
 const MAX_ACTIVITY_LIMIT = 1000;
 
@@ -48,7 +53,7 @@ interface Transfer {
   call: TransferCall;
   hash: string;
   state: State;
-  reasonCode: string | null;
+  reasonCode: TransferReasonCode | null;
   updatedAt: string;
   pending?: PendingApproval;
 }
@@ -150,7 +155,7 @@ export function createFakeGuardian(options: FakeGuardianOptions): Guardian {
         policyVersion: version,
         digest: hash,
         nonce: token(16),
-        expiresAt: new Date(now() + APPROVAL_TTL_MS).toISOString(),
+        expiresAt: new Date(now() + APPROVAL_TTL_SEC * 1000).toISOString(),
       };
       log('policy.require_approval', agentId, { tool: call.tool, requestHash: hash, reservationId: ref });
       return proposeResult(t);

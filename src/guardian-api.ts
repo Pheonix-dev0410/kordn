@@ -21,7 +21,7 @@ export interface PendingApproval {
   expiresAt: string;
 }
 
-export type ApprovalError = 'NOT_PENDING' | 'STALE_DIGEST' | 'BAD_NONCE' | 'APPROVAL_EXPIRED' | 'SESSION_REVOKED' | DenyCode;
+export type ApprovalError = 'NOT_PENDING' | 'STALE_DIGEST' | 'BAD_NONCE' | DenyCode;
 
 export type ApprovalResult = { ok: true } | { ok: false; code: ApprovalError };
 

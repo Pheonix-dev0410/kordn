@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import policyJson from '../examples/policy.json' with { type: 'json' };
 import { createFakeGuardian } from '../src/fake-guardian.js';
-import { Policy } from '../src/schema.js';
+import { APPROVAL_TTL_SEC, Policy, TOOL_OUTPUTS, type ToolName } from '../src/schema.js';
 
 const policy = Policy.parse(policyJson);
 const agent = policy.agentId;
@@ -56,12 +56,16 @@ describe('fake guardian', () => {
     expect(await g.listPending()).toEqual([]);
   });
 
-  it('expires approvals', async () => {
-    let now = Date.UTC(2026, 9, 25);
+  it('expires approvals after APPROVAL_TTL_SEC', async () => {
+    const start = Date.UTC(2026, 9, 25);
+    let now = start;
     const g = createFakeGuardian({ policy, nowMs: () => now });
     await g.handleCall(agent, 'af_propose_transfer', transfer(9000));
     const [p] = await g.listPending();
-    now += 16 * 60_000;
+    expect(p!.expiresAt).toBe(new Date(start + APPROVAL_TTL_SEC * 1000).toISOString());
+    now = start + APPROVAL_TTL_SEC * 1000 - 1;
+    expect(await g.listPending()).toHaveLength(1);
+    now = start + APPROVAL_TTL_SEC * 1000;
     expect(await g.approve(p!.reservationId, p!.digest, p!.nonce)).toEqual({ ok: false, code: 'APPROVAL_EXPIRED' });
   });
 
@@ -323,5 +327,32 @@ describe('fake guardian: listActivity limit', () => {
   it.each([0, -1, 1.5, Number.NaN, Infinity])('rejects limit %s', async (limit) => {
     const g = createFakeGuardian({ policy });
     await expect(g.listActivity({ limit })).rejects.toThrow(RangeError);
+  });
+});
+
+describe('fake guardian: output contract', () => {
+  it('every result matches TOOL_OUTPUTS', async () => {
+    let now = Date.UTC(2026, 9, 25);
+    const g = createFakeGuardian({ policy, nowMs: () => now });
+    const calls: [ToolName, unknown][] = [
+      ['af_get_balance', { resourceId: policy.resourceId }],
+      ['af_list_transactions', { resourceId: policy.resourceId, fromDate: '2026-10-01', limit: 5 }],
+      ['af_propose_transfer', transfer(6000)],
+      ['af_propose_transfer', transfer(9000)],
+      ['af_propose_transfer', transfer(9500)],
+    ];
+    const refs: string[] = [];
+    for (const [tool, args] of calls) {
+      const r = await g.handleCall(agent, tool, args);
+      expect(r.ok && TOOL_OUTPUTS[tool].safeParse(r.result).success).toBe(true);
+      if (r.ok && tool === 'af_propose_transfer') refs.push((r.result as { transferRef: string }).transferRef);
+    }
+    const [p] = await g.listPending();
+    await g.reject(p!.reservationId, p!.nonce);
+    now += APPROVAL_TTL_SEC * 1000;
+    for (const [tool, args] of [...calls.slice(2), ...refs.map((transferRef) => ['af_get_transfer_status', { transferRef }] as const)]) {
+      const r = await g.handleCall(agent, tool, args);
+      expect(r.ok && TOOL_OUTPUTS[tool].safeParse(r.result).success).toBe(true);
+    }
   });
 });
