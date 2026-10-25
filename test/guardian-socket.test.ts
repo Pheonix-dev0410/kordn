@@ -137,7 +137,6 @@ function stubGuardian(answer: () => Promise<unknown> = async () => ({ ok: true }
   return { guardian, calls };
 }
 
-
 /** Write each piece separately, letting the server read in between. */
 async function writeInPieces(path: string, pieces: (string | Buffer)[], want: number) {
   const sock = client(path);
