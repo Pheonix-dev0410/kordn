@@ -1,60 +1,98 @@
-# Kordn
+# kordn
 
-**A local-first firewall that makes AI-agent permissions enforceable at the tool and operating-system boundary, independent of what the model believes or is instructed to do.**
+A firewall for AI agents. kordn is an MCP server that sits between an agent and the actions it can take, and enforces limits you set (which payees, how much money, how many calls) outside the model. A prompt injection can change what the agent tries. It can't change what kordn allows.
 
-> ⚠️ Experimental. v0.1 protects a **mock bank with fake money** only. Do not use it to protect real financial operations, and never put real bank credentials anywhere near it.
+v0.1 protects a mock bank with fake money only. Don't connect it to real accounts.
 
-The model decides what to *try*. The user decides what is *allowed*. A protected action must fail even when the model ignores every safety instruction.
+> Status: in development. The schemas and test data are in place. The MCP server, guardian and sandbox are being built ([roadmap](../../issues/19)).
 
-## How it works
+## Setup
 
-```
- ┌──────────── rootless container, --network none ───────────┐
- │  agent-runner (untrusted) ──MCP──▶ mcp-shim (untrusted)    │
- └───────────────────────────────────────│────────────────────┘
-                                         │ Unix socket (only mount)
- ┌──────────────── host, trusted ────────▼────────────────────┐
- │  guardian ── policy (pure) ── db (SQLite WAL ledger+audit) │
- │     │                                                      │
- │     └── trusted executor ──▶ adapter-mock ──▶ mock-bank    │
- │  admin-ui (loopback only): policy, approvals, kill switch  │
- └────────────────────────────────────────────────────────────┘
-```
-
-The agent can call exactly four typed MCP tools: `af_get_balance`, `af_list_transactions`, `af_propose_transfer`, `af_get_transfer_status`. Every call is re-validated and re-authorized by the guardian against a deterministic policy and an atomic rolling-window ledger. Anything unrecognized is denied.
-
-## Repository layout
-
-| Path | Trust | What |
-|---|---|---|
-| `packages/contracts` | shared | Zod schemas, types and module interfaces every other package codes against |
-| `packages/policy` | trusted | Pure `evaluate()` implementing §6.3 precedence |
-| `packages/db` | trusted | SQLite migrations, reservations ledger, hash-chained audit store |
-| `packages/guardian` | trusted | Authorization, reservations, executor, IPC server, admin API |
-| `packages/adapter-mock` | trusted | Typed, idempotent mock-bank actions with fault injection |
-| `packages/launcher` | trusted | Starts services, launches the sandbox, isolation checks |
-| `packages/mcp-shim` | **untrusted** | MCP v2 server exposing the four tools, forwards to guardian |
-| `apps/mock-bank` | test target | Synthetic accounts, payees and (malicious) memos |
-| `apps/admin-ui` | trusted | Loopback-only policy editor, approvals, activity, emergency stop |
-| `apps/agent-runner` | **untrusted** | Scripted attacker / optional model loop |
-| `tests/{integration,adversarial,concurrency}` | | Cross-package security gates |
-
-The full design is in [`docs/design/Agent_Firewall_Implementation_Design_v0.1.docx`](docs/design/Agent_Firewall_Implementation_Design_v0.1.docx). Section numbers (§) in code and issues refer to it.
-
-## Quick start (development)
+Requires Node.js 24+.
 
 ```sh
-corepack enable          # uses the pnpm version pinned in package.json
-pnpm install --frozen-lockfile
-pnpm lint && pnpm typecheck
-pnpm test:unit
+git clone https://github.com/Pheonix-dev0410/kordn.git
+cd kordn
+npm install
+npm run build
 ```
 
-Requires Node.js 24 LTS. The sandbox (`pnpm sandbox:verify`, `pnpm demo:run`) requires Linux (Ubuntu 24.04 reference) with rootless Docker. See [docs/supported-runtime.md](docs/supported-runtime.md).
+## Connect to an AI client
 
-## Security claims
+**Claude Code**
 
-See [docs/threat-model.md](docs/threat-model.md) and [docs/coverage.md](docs/coverage.md). In short: for the supported local setup, guarded mock-bank actions cannot execute outside configured rules, assuming the trusted daemon and OS isolation remain uncompromised. We do **not** claim to stop all prompt injection, secure arbitrary hosted agents, or protect real bank accounts.
+```sh
+claude mcp add kordn -- node /absolute/path/to/kordn/dist/index.js
+```
+
+**Claude Desktop, Cursor, and other clients that use an `mcpServers` config**
+
+```json
+{
+  "mcpServers": {
+    "kordn": {
+      "command": "node",
+      "args": ["/absolute/path/to/kordn/dist/index.js"]
+    }
+  }
+}
+```
+
+**ChatGPT, Grok, and other clients that need a URL**
+
+```sh
+KORDN_TOKEN=<random-secret> node dist/index.js --http --port 3333
+```
+
+This serves MCP at `http://127.0.0.1:3333/mcp`. Clients running in the cloud need a public HTTPS URL, so put it behind a tunnel and configure the client with the token.
+
+## Set your limits
+
+Edit `examples/policy.json`:
+
+```jsonc
+"transfers": {
+  "maxCalls": 3,                    // per 24h
+  "maxSingleMinor": 10000,          // $100.00
+  "maxCumulativeMinor": 25000,      // $250.00 per 24h
+  "allowedPayeeIds": ["utilities", "landlord"],
+  "humanApprovalAboveMinor": 7500   // above $75.00 needs your approval
+}
+```
+
+Anything not explicitly allowed is denied.
+
+## Tools the agent gets
+
+| Tool | What it does |
+|---|---|
+| `af_get_balance` | Read the mock account balance |
+| `af_list_transactions` | Read up to 20 recent transactions. Memos are marked as untrusted text |
+| `af_propose_transfer` | Request a transfer. kordn allows, denies, or asks you to approve |
+| `af_get_transfer_status` | Check a transfer's state |
+
+## Guard vs Contain
+
+- **Guard** (default): every call through kordn is checked. An agent that also has other tools (a browser, a shell) can go around it.
+- **Contain** (Linux): the agent runs in a sandbox with no network and kordn as its only way out. This is the mode the security claims apply to. See [docs/threat-model.md](docs/threat-model.md).
+
+## Project layout
+
+```
+src/         source
+test/        tests
+examples/    example policy
+docs/        threat model and the full design doc
+```
+
+## Development
+
+```sh
+npm run typecheck
+npm test
+```
+
+Work happens on `track/core` (guardian, policy, ledger) and `track/boundary` (MCP server, sandbox, admin UI) and is merged into `main` once both are done. Branch off your track, open PRs into it, and link the issue.
 
 ## License
 

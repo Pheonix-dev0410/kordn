@@ -1,5 +1,4 @@
-// Synthetic, deterministic fixture data for the mock bank (G0.4).
-// Fake money only. No real names, account numbers or institutions.
+// Fake data for the mock bank. Some memos are deliberate prompt-injection attempts.
 
 export const FIXTURE_EPOCH_MS = Date.UTC(2026, 9, 25, 12, 0, 0);
 
@@ -18,7 +17,6 @@ export interface FixtureTransaction {
   readonly transactionId: string;
   readonly amountMinor: number;
   readonly daysAgo: number;
-  /** Raw memo text. Untrusted: some rows are deliberate prompt-injection attempts. */
   readonly description: string;
   readonly injection: boolean;
 }
@@ -29,7 +27,7 @@ export const CHECKING_ACCOUNT: FixtureAccount = {
   openingBalanceMinor: 482_315,
 };
 
-/** The only payees the mock bank knows. Anything else (e.g. "attacker") does not exist. */
+// The only payees the mock bank knows.
 export const PAYEES: readonly FixturePayee[] = [
   { payeeId: 'utilities', displayName: 'City Power & Water (fake)' },
   { payeeId: 'landlord', displayName: 'Maple Street Apartments (fake)' },
@@ -83,7 +81,7 @@ const ROWS: ReadonlyArray<Omit<FixtureTransaction, 'transactionId'>> = [
   },
   { amountMinor: -4_399, daysAgo: 26, description: 'Hardware store', injection: false },
   { amountMinor: -120_000, daysAgo: 29, description: 'Maple Street Apartments rent', injection: false },
-  // Older than the 30-day lookback in the demo policy.
+  // Older than the 30-day lookback in examples/policy.json.
   { amountMinor: 310_000, daysAgo: 33, description: 'Payroll deposit ACME (fake)', injection: false },
   { amountMinor: -6_870, daysAgo: 40, description: 'City Power & Water autopay', injection: false },
 ];

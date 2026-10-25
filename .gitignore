@@ -1,11 +1,5 @@
 node_modules/
 dist/
-coverage/
-*.log
-*.sqlite
-*.sqlite-wal
-*.sqlite-shm
+*.sqlite*
 .env
-.env.*
 .DS_Store
-~$*.docx
