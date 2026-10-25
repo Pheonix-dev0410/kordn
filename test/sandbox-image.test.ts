@@ -88,6 +88,7 @@ describe.skipIf(!DOCKER_TESTS)('sandbox image (Docker)', () => {
     expect(await leftovers()).toEqual([]);
   }, 120_000);
 
+  // Production deps only: zod and the MCP server SDK (with its core), never the client SDK or dev tools.
   it('ships only the compiled app, production deps and the agent, as a non-root user, with no shell or npm', async () => {
     const out = await dockerOk([
       'run',
@@ -96,9 +97,9 @@ describe.skipIf(!DOCKER_TESTS)('sandbox image (Docker)', () => {
       'none',
       image,
       '-e',
-      'const fs = require("fs"); console.log(JSON.stringify({ app: fs.readdirSync("/app").sort(), sandbox: fs.readdirSync("/app/sandbox"), deps: fs.readdirSync("/app/node_modules").filter((d) => !d.startsWith(".")), uid: process.getuid(), shell: ["/bin/sh", "/bin/bash", "/busybox"].filter((p) => fs.existsSync(p)), npm: ["/usr/local/bin/npm", "/usr/bin/npm", "/nodejs/bin/npm"].filter((p) => fs.existsSync(p)) }))',
+      'const fs = require("fs"); console.log(JSON.stringify({ app: fs.readdirSync("/app").sort(), sandbox: fs.readdirSync("/app/sandbox"), deps: fs.readdirSync("/app/node_modules").filter((d) => !d.startsWith(".")), mcp: fs.readdirSync("/app/node_modules/@modelcontextprotocol"), uid: process.getuid(), shell: ["/bin/sh", "/bin/bash", "/busybox"].filter((p) => fs.existsSync(p)), npm: ["/usr/local/bin/npm", "/usr/bin/npm", "/nodejs/bin/npm"].filter((p) => fs.existsSync(p)) }))',
     ]);
-    expect(JSON.parse(out)).toEqual({ app: ['dist', 'node_modules', 'package.json', 'sandbox'], sandbox: ['agent.mjs'], deps: ['zod'], uid: 65532, shell: [], npm: [] });
+    expect(JSON.parse(out)).toEqual({ app: ['dist', 'node_modules', 'package.json', 'sandbox'], sandbox: ['agent.mjs'], deps: ['@modelcontextprotocol', 'zod'], mcp: ['core', 'server'], uid: 65532, shell: [], npm: [] });
     const config = JSON.parse(await dockerOk(['image', 'inspect', '--format', '{{json .Config}}', image]));
     expect(config).toMatchObject({ User: '65532:65532', Entrypoint: ['/nodejs/bin/node'], Cmd: ['/app/sandbox/agent.mjs'] });
   });
