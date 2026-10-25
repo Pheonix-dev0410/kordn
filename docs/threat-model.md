@@ -39,3 +39,7 @@ Out of scope: root on the host, kernel escapes, a modified kordn binary.
 | Kill kordn mid-transfer | No duplicate transfer, quota held |
 | Direct network access to the bank from the sandbox | No route |
 | Read the policy database from the sandbox | Not mounted |
+
+## Not logged
+
+- A message that isn't valid JSON-RPC/MCP (for example `params` that is a string, null or an array) is rejected by the MCP transport before kordn sees it: stdio drops it, HTTP answers 400. It isn't logged. Every well-formed `tools/call` is logged, including unknown tools and bad arguments.
