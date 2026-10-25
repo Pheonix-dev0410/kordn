@@ -32,9 +32,8 @@ import {
 const DEFAULT_ACTIVITY_LIMIT = 100;
 const MAX_ACTIVITY_LIMIT = 1000;
 
-// af_propose_transfer has no rejected or expired state, so a retry of one reports failed with
-// the reason code; the exact state is in af_get_transfer_status. In-progress states report
-// unknown: the outcome isn't known yet.
+// What af_propose_transfer reports for each state, e.g. on an idempotent retry. In-progress
+// states report unknown: the outcome isn't known yet.
 const PROPOSE_STATE = {
   RESERVED: 'unknown',
   PENDING_APPROVAL: 'pending_approval',
@@ -43,8 +42,8 @@ const PROPOSE_STATE = {
   UNKNOWN: 'unknown',
   SUCCEEDED: 'succeeded',
   FAILED: 'failed',
-  REJECTED: 'failed',
-  EXPIRED: 'failed',
+  REJECTED: 'rejected',
+  EXPIRED: 'expired',
 } as const satisfies Record<State, string>;
 
 interface Transfer {

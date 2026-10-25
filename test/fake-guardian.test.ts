@@ -231,7 +231,7 @@ describe('fake guardian: idempotency', () => {
     expect(await g.listActivity({ events: ['transfer.succeeded'] })).toHaveLength(1);
   });
 
-  it('reports a rejected or expired transfer as failed, with its reason, on retry', async () => {
+  it('reports a rejected or expired transfer as such, with its reason, on retry', async () => {
     let now = Date.UTC(2026, 9, 25);
     const g = createFakeGuardian({ policy, nowMs: () => now });
     const rejected = await g.handleCall(agent, 'af_propose_transfer', transfer(9000));
@@ -239,13 +239,25 @@ describe('fake guardian: idempotency', () => {
     await g.reject(p!.reservationId, p!.nonce);
     expect(await g.handleCall(agent, 'af_propose_transfer', transfer(9000))).toEqual({
       ok: true,
-      result: { state: 'failed', transferRef: ref(rejected), reasonCode: null },
+      result: { state: 'rejected', transferRef: ref(rejected), reasonCode: null },
     });
     const expired = await g.handleCall(agent, 'af_propose_transfer', transfer(9500));
     now += 16 * 60_000;
     expect(await g.handleCall(agent, 'af_propose_transfer', transfer(9500))).toEqual({
       ok: true,
-      result: { state: 'failed', transferRef: ref(expired), reasonCode: 'APPROVAL_EXPIRED' },
+      result: { state: 'expired', transferRef: ref(expired), reasonCode: 'APPROVAL_EXPIRED' },
+    });
+  });
+
+  it('reports a transfer rejected at approval time with the rule that rejected it', async () => {
+    const g = createFakeGuardian({ policy });
+    const first = await g.handleCall(agent, 'af_propose_transfer', transfer(9000));
+    const [p] = await g.listPending();
+    await g.updatePolicy({ ...policy, transfers: { ...policy.transfers, maxSingleMinor: 8000 } }, 1);
+    await g.approve(p!.reservationId, p!.digest, p!.nonce);
+    expect(await g.handleCall(agent, 'af_propose_transfer', transfer(9000))).toEqual({
+      ok: true,
+      result: { state: 'rejected', transferRef: ref(first), reasonCode: 'SINGLE_LIMIT' },
     });
   });
 
@@ -350,9 +362,12 @@ describe('fake guardian: output contract', () => {
     const [p] = await g.listPending();
     await g.reject(p!.reservationId, p!.nonce);
     now += APPROVAL_TTL_SEC * 1000;
+    const states: unknown[] = [];
     for (const [tool, args] of [...calls.slice(2), ...refs.map((transferRef) => ['af_get_transfer_status', { transferRef }] as const)]) {
       const r = await g.handleCall(agent, tool, args);
       expect(r.ok && TOOL_OUTPUTS[tool].safeParse(r.result).success).toBe(true);
+      if (r.ok) states.push((r.result as { state: unknown }).state);
     }
+    expect(states).toEqual(['succeeded', 'rejected', 'expired', 'SUCCEEDED', 'REJECTED', 'EXPIRED']);
   });
 });
