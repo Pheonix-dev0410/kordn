@@ -121,4 +121,6 @@ daemon's configuration and the probe to agree, so a forged probe can't pass them
 The exceptions rest on the probe alone: reaching the guardian socket, and the admin UI port and
 guardian DB path being out of reach. For those, the host-side canary is the only independent
 signal, and it only covers host loopback. Build the image yourself from this repo, and run it by
-digest (which `kordn contain` does) so a re-tagged image can't be swapped in.
+its local image ID (`sha256:…`, which `kordn contain` resolves from the tag before starting),
+so a re-tagged image can't be swapped in. The ID comes from this daemon's local image store; it
+is not a registry digest, which a locally built image doesn't have.
