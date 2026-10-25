@@ -160,8 +160,9 @@ export const TOOL_OUTPUTS = {
       .max(20),
   }),
   // A denial is never a result: it is an error carrying a DenyCode (socket ok:false, MCP isError).
+  // rejected and expired only describe an earlier transfer, reported again on an idempotent retry.
   af_propose_transfer: z.strictObject({
-    state: z.enum(['pending_approval', 'succeeded', 'failed', 'unknown']),
+    state: z.enum(['pending_approval', 'succeeded', 'failed', 'unknown', 'rejected', 'expired']),
     transferRef: TransferRef.nullable(),
     reasonCode: TransferReasonCode.nullable(),
   }),

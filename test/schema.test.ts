@@ -74,6 +74,13 @@ describe('tool outputs', () => {
     expect(TOOL_OUTPUTS.af_propose_transfer.safeParse({ ...propose, state: 'denied' }).success).toBe(false);
   });
 
+  it('can report a retried transfer that was rejected or expired', () => {
+    expect(TOOL_OUTPUTS.af_propose_transfer.safeParse({ ...propose, state: 'rejected' }).success).toBe(true);
+    expect(
+      TOOL_OUTPUTS.af_propose_transfer.safeParse({ ...propose, state: 'expired', reasonCode: 'APPROVAL_EXPIRED' }).success,
+    ).toBe(true);
+  });
+
   it('only lets typed reason codes reach the agent', () => {
     const failed = { ...propose, state: 'failed', reasonCode: 'ADAPTER_FAILED' };
     expect(TOOL_OUTPUTS.af_propose_transfer.safeParse(failed).success).toBe(true);
