@@ -1,5 +1,6 @@
 import { z } from 'zod';
-import { type ProbeParams, type ProbeResult, SANDBOX_SOCKET } from './sandbox-probe.js';
+import { ALLOWED_RUNTIMES, SANDBOX_SOCKET, SECURITY_OPTS, TMP_TMPFS_OPTIONS } from './sandbox-contract.js';
+import type { ProbeParams, ProbeResult } from './sandbox-probe.js';
 
 // Launcher checks for Contain mode (design doc §9.3). Pure functions over `docker info`,
 // `docker inspect` and the in-container probe, so every unsafe setting can be tested
@@ -21,7 +22,14 @@ export interface IsolationExpectations {
   hostAddresses: string[];
   /** The image's own Env (KEY=value). Anything beyond it was injected at run time. */
   imageEnv: string[];
+  /** The launcher's own /proc/self/ns/<kind> links. The sandbox must share none of them. */
+  hostNamespaces: Record<string, string>;
+  /** Host paths of Docker daemon sockets (hostDockerSocketPaths). */
+  dockerSockets: string[];
 }
+
+/** Namespaces the sandbox must have its own of. */
+export const NAMESPACE_KINDS = ['cgroup', 'ipc', 'mnt', 'net', 'pid', 'user', 'uts'] as const;
 
 const OUTBOUND_FIXED = [
   { host: '1.1.1.1', port: 443 },
@@ -48,8 +56,7 @@ export function loopbackTargets(e: IsolationExpectations): { host: string; port:
 
 export function absentPaths(e: IsolationExpectations): string[] {
   return [
-    '/var/run/docker.sock',
-    '/run/docker.sock',
+    ...e.dockerSockets,
     '/run/host-services/ssh-auth.sock',
     e.hostHome,
     ...(e.sshAuthSock ? [e.sshAuthSock] : []),
@@ -68,6 +75,7 @@ export function probeTargets(e: IsolationExpectations): ProbeParams {
   };
 }
 
+
 // ---- evaluation ----
 
 export const CHECK_IDS = [
@@ -80,6 +88,7 @@ export const CHECK_IDS = [
   'capabilities',
   'noNewPrivileges',
   'seccomp',
+  'hardening',
   'namespaces',
   'resourceLimits',
   'hostServicesUnreachable',
@@ -116,6 +125,39 @@ const MAX_MEMORY = 512 * 1024 * 1024;
 const MAX_NANO_CPUS = 1_000_000_000;
 const NO_ROUTE = new Set(['ENETUNREACH', 'EHOSTUNREACH']);
 const ZERO_CAPS = /^0+$/;
+const DAEMON_SECCOMP = 'name=seccomp,profile=builtin';
+
+/** Docker's default masked and read-only paths (moby oci defaults), minus the per-CPU ones. */
+const DEFAULT_MASKED_PATHS = [
+  '/proc/acpi',
+  '/proc/asound',
+  '/proc/interrupts',
+  '/proc/kcore',
+  '/proc/keys',
+  '/proc/latency_stats',
+  '/proc/sched_debug',
+  '/proc/scsi',
+  '/proc/timer_list',
+  '/proc/timer_stats',
+  '/sys/devices/virtual/powercap',
+  '/sys/firmware',
+];
+const DEFAULT_READONLY_PATHS = ['/proc/bus', '/proc/fs', '/proc/irq', '/proc/sys', '/proc/sysrq-trigger'];
+
+/**
+ * Fixed inode numbers of the kernel's initial namespaces (include/linux/proc_ns.h). Comparing
+ * against these as well as the launcher's own namespaces still works when the launcher itself
+ * runs inside separate namespaces (a sandboxed shell).
+ */
+const INITIAL_NAMESPACE_INODES: Record<string, number> = {
+  ipc: 0xefffffff,
+  uts: 0xeffffffe,
+  user: 0xeffffffd,
+  pid: 0xeffffffc,
+  cgroup: 0xeffffffb,
+  net: 0xeffffff9,
+  mnt: 0xeffffff8,
+};
 
 const Info = z.object({ SecurityOptions: z.array(z.string()) });
 
@@ -130,12 +172,17 @@ const Inspect = z.object({
     CapAdd: z.array(z.string()).nullable(),
     Privileged: z.boolean(),
     SecurityOpt: z.array(z.string()).nullable(),
+    Runtime: z.string(),
+    MaskedPaths: z.array(z.string()).nullable(),
+    ReadonlyPaths: z.array(z.string()).nullable(),
     PidsLimit: z.number().nullable(),
     Memory: z.number(),
     MemorySwap: z.number(),
     NanoCpus: z.number(),
     Tmpfs: z.record(z.string(), z.string()).nullable().optional(),
     Devices: z.array(z.unknown()).nullable(),
+    DeviceCgroupRules: z.array(z.unknown()).nullable(),
+    DeviceRequests: z.array(z.unknown()).nullable(),
     PidMode: z.string(),
     IpcMode: z.string(),
     UTSMode: z.string(),
@@ -146,6 +193,7 @@ const Inspect = z.object({
   NetworkSettings: z.object({ Networks: z.record(z.string(), z.unknown()).nullable() }),
 });
 type Inspect = z.infer<typeof Inspect>;
+type Mount = NonNullable<ProbeResult['mounts']>[number];
 
 /** Mount points docker itself creates in every container, with the filesystem expected there. */
 const DOCKER_MOUNTS: Record<string, string[] | null> = {
@@ -154,7 +202,6 @@ const DOCKER_MOUNTS: Record<string, string[] | null> = {
   '/dev': ['tmpfs'],
   '/dev/pts': ['devpts'],
   '/dev/mqueue': ['mqueue'],
-  '/dev/shm': ['tmpfs'],
   '/sys': ['sysfs'],
   '/sys/fs/cgroup': ['cgroup2', 'cgroup'],
   '/tmp': ['tmpfs'],
@@ -172,6 +219,11 @@ interface Ctx {
 type Problems = string[];
 
 const key = (t: { host: string; port: number }) => `${t.host.includes(':') ? `[${t.host}]` : t.host}:${t.port}`;
+const options = (m: Mount | undefined) => (m ? m.options.split(',') : []);
+const mountAt = (p: ProbeResult, point: string) => p.mounts?.filter((m) => m.mountPoint === point) ?? [];
+const names = (env: string[]) => env.map((v) => v.split('=')[0] ?? '');
+const isShared = (mode: string) => mode === 'host' || mode.startsWith('container:');
+const sameList = (a: readonly string[], b: readonly string[]) => a.length === b.length && a.every((x, i) => x === b[i]);
 
 /** Every target must have at least one result, and every result for it must be acceptable. */
 function requireResults<T extends { result: string }>(
@@ -194,19 +246,44 @@ function probeOrMissing(ctx: Ctx, check: (p: ProbeResult) => Problems): Problems
   return ctx.p ? check(ctx.p) : ['no probe output from inside the container'];
 }
 
-const names = (env: string[]) => env.map((v) => v.split('=')[0] ?? '');
+function interfaceProblems(p: ProbeResult): Problems {
+  if (p.interfaces === null) return ['interfaces unreadable'];
+  return p.interfaces.join() === 'lo' ? [] : [`interfaces: ${p.interfaces.join(', ')}`];
+}
+
+function routeProblems(p: ProbeResult): Problems {
+  const problems: Problems = [];
+  if (p.ipv4Routes === null) problems.push('IPv4 routes unreadable');
+  else if (p.ipv4Routes.length > 0) problems.push(`IPv4 routes via ${p.ipv4Routes.join(', ')}`);
+  if (p.ipv6Routes === null) problems.push('IPv6 routes unreadable');
+  else {
+    const offLoopback = p.ipv6Routes.filter((i) => i !== 'lo');
+    if (offLoopback.length > 0) problems.push(`IPv6 routes via ${offLoopback.join(', ')}`);
+  }
+  return problems;
+}
+
+/** The namespace link must be readable, of the right kind, and neither the launcher's nor the host's initial one. */
+function namespaceProblems(kind: string, link: string | undefined, launcher: string | undefined): Problems {
+  const m = link === undefined ? null : /^(\w+):\[(\d+)\]$/.exec(link);
+  if (!m || m[1] !== kind) return [`${kind} namespace unreadable (${link ?? 'missing'})`];
+  if (launcher === undefined || !/^\w+:\[\d+\]$/.test(launcher)) return [`${kind} namespace of the launcher unknown`];
+  if (link === launcher) return [`shares the launcher's ${kind} namespace`];
+  if (Number(m[2]) === INITIAL_NAMESPACE_INODES[kind]) return [`in the host's initial ${kind} namespace`];
+  return [];
+}
 
 type CheckFn = (ctx: Ctx) => { problems: Problems; ok: string };
 
 const CHECKS: Record<CheckId, CheckFn> = {
-  rootless: ({ info }) => ({
-    problems: !info
-      ? ['docker info unreadable']
-      : info.SecurityOptions.includes('name=rootless')
-        ? []
-        : ['Docker daemon is rootful (no name=rootless in docker info): container root is host root'],
-    ok: 'Docker daemon is rootless',
-  }),
+  rootless: ({ info }) => {
+    let problems: Problems = [];
+    if (!info) problems = ['docker info unreadable'];
+    else if (!info.SecurityOptions.includes('name=rootless')) {
+      problems = ['Docker daemon is rootful (no name=rootless in docker info): container root is host root'];
+    }
+    return { problems, ok: 'Docker daemon is rootless' };
+  },
 
   network: (ctx) => {
     const outbound = outboundTargets(ctx.e);
@@ -219,13 +296,8 @@ const CHECKS: Record<CheckId, CheckFn> = {
             .map((n) => `attached to network ${n}`),
         ]),
         ...probeOrMissing(ctx, (p) => [
-          ...(p.interfaces === null ? ['interfaces unreadable'] : p.interfaces.join() === 'lo' ? [] : [`interfaces: ${p.interfaces.join(', ')}`]),
-          ...(p.ipv4Routes === null ? ['IPv4 routes unreadable'] : p.ipv4Routes.length ? [`IPv4 routes via ${p.ipv4Routes.join(', ')}`] : []),
-          ...(p.ipv6Routes === null
-            ? ['IPv6 routes unreadable']
-            : p.ipv6Routes.some((i) => i !== 'lo')
-              ? [`IPv6 routes via ${p.ipv6Routes.filter((i) => i !== 'lo').join(', ')}`]
-              : []),
+          ...interfaceProblems(p),
+          ...routeProblems(p),
           ...outbound.flatMap((t) =>
             requireResults(p.connects, (c) => c.host === t.host && c.port === t.port, (r) => NO_ROUTE.has(r), `connect ${key(t)}`),
           ),
@@ -237,19 +309,22 @@ const CHECKS: Record<CheckId, CheckFn> = {
 
   readOnlyRootfs: (ctx) => ({
     problems: [
-      ...configOrMissing(ctx, (c) => [
-        ...(c.HostConfig.ReadonlyRootfs ? [] : ['root filesystem is writable (no --read-only)']),
-        ...Object.entries(c.HostConfig.Tmpfs ?? {}).flatMap(([path, opts]) => {
-          if (path !== '/tmp') return [`extra tmpfs at ${path}`];
-          const missing = ['nosuid', 'nodev', 'noexec'].filter((o) => !opts.split(',').includes(o));
-          return missing.length ? [`/tmp tmpfs lacks ${missing.join(', ')}`] : [];
-        }),
-      ]),
+      ...configOrMissing(ctx, (c) => {
+        const tmpfs = c.HostConfig.Tmpfs ?? {};
+        const problems: Problems = c.HostConfig.ReadonlyRootfs ? [] : ['root filesystem is writable (no --read-only)'];
+        for (const path of Object.keys(tmpfs).filter((p) => p !== '/tmp')) problems.push(`extra tmpfs at ${path}`);
+        // Exact match: docker applies later options, so "noexec,...,exec" would pass a token test.
+        if (tmpfs['/tmp'] !== TMP_TMPFS_OPTIONS) problems.push(`/tmp tmpfs options are ${JSON.stringify(tmpfs['/tmp'] ?? null)}, not ${TMP_TMPFS_OPTIONS}`);
+        return problems;
+      }),
       ...probeOrMissing(ctx, (p) => {
         if (!p.mounts) return ['mounts unreadable'];
-        const root = p.mounts.filter((m) => m.mountPoint === '/');
+        const root = mountAt(p, '/');
+        const tmp = mountAt(p, '/tmp');
+        const tmpMissing = ['nosuid', 'nodev', 'noexec'].filter((o) => !options(tmp[0]).includes(o));
         return [
-          ...(root.length === 1 && root[0]?.options.split(',').includes('ro') ? [] : ['/ is not mounted read-only']),
+          ...(root.length === 1 && options(root[0]).includes('ro') ? [] : ['/ is not mounted read-only']),
+          ...(tmp.length === 1 && tmpMissing.length === 0 ? [] : [`/tmp is not mounted nosuid,nodev,noexec (${tmp[0]?.options ?? 'missing'})`]),
           // EROFS proves the filesystem refused. EACCES only means this user lacks permission,
           // which is also what a writable root looks like to a non-root user.
           ...probeTargets(ctx.e).writeTargets.flatMap((dir) =>
@@ -258,7 +333,7 @@ const CHECKS: Record<CheckId, CheckFn> = {
         ];
       }),
     ],
-    ok: 'root filesystem is read-only (writes fail with EROFS); /tmp is a noexec tmpfs',
+    ok: 'root filesystem is read-only (writes fail with EROFS); /tmp is a nosuid,nodev,noexec tmpfs',
   }),
 
   onlyGuardianSocket: (ctx) => {
@@ -269,10 +344,13 @@ const CHECKS: Record<CheckId, CheckFn> = {
           const socket = c.Mounts.filter(
             (m) => m.Type === 'bind' && m.Source === ctx.e.socketPath && m.Destination === SANDBOX_SOCKET && !m.RW,
           );
+          const h = c.HostConfig;
           return [
             ...(socket.length === 1 ? [] : ['guardian socket is not mounted read-only bind exactly once']),
             ...c.Mounts.filter((m) => !socket.includes(m)).map((m) => `extra mount ${m.Source || m.Type} -> ${m.Destination}`),
-            ...(c.HostConfig.Devices?.length ? [`${c.HostConfig.Devices.length} device(s) passed through`] : []),
+            ...(h.Devices?.length ? [`${h.Devices.length} device(s) passed through`] : []),
+            ...(h.DeviceCgroupRules?.length ? [`${h.DeviceCgroupRules.length} device cgroup rule(s)`] : []),
+            ...(h.DeviceRequests?.length ? [`${h.DeviceRequests.length} device request(s)`] : []),
           ];
         }),
         ...probeOrMissing(ctx, (p) => [
@@ -280,13 +358,12 @@ const CHECKS: Record<CheckId, CheckFn> = {
           ...(p.mounts ? unexpectedMounts(p.mounts, ctx) : ['mounts unreadable']),
         ]),
       ],
-      ok: `only the guardian socket is mounted; no docker socket, home dir or SSH agent inside`,
+      ok: 'only the guardian socket is mounted; no docker socket, home dir, SSH agent or devices inside',
     };
   },
 
   noHostEnv: (ctx) => {
-    const imageNames = new Set(names(ctx.e.imageEnv));
-    const allowed = new Set([...imageNames, 'HOSTNAME', 'HOME']);
+    const allowed = new Set([...names(ctx.e.imageEnv), 'HOSTNAME', 'HOME']);
     return {
       problems: [
         ...configOrMissing(ctx, (c) => {
@@ -305,9 +382,12 @@ const CHECKS: Record<CheckId, CheckFn> = {
   nonRoot: (ctx) => ({
     problems: [
       ...configOrMissing(ctx, (c) => {
-        const m = /^([0-9]+)(?::([0-9]+))?$/.exec(c.Config.User);
-        if (!m) return [c.Config.User ? `user ${JSON.stringify(c.Config.User)} is not numeric` : 'no user set'];
-        return Number(m[1]) === 0 || (m[2] !== undefined && Number(m[2]) === 0) ? [`user ${c.Config.User} is root`] : [];
+        const user = c.Config.User;
+        const m = /^([0-9]+)(?::([0-9]+))?$/.exec(user);
+        if (!m) return [user ? `user ${JSON.stringify(user)} is not numeric` : 'no user set'];
+        const rootUid = Number(m[1]) === 0;
+        const rootGid = m[2] !== undefined && Number(m[2]) === 0;
+        return rootUid || rootGid ? [`user ${user} is root`] : [];
       }),
       ...probeOrMissing(ctx, (p) => [
         ...(p.uid === 0 ? ['runs as uid 0'] : []),
@@ -315,20 +395,25 @@ const CHECKS: Record<CheckId, CheckFn> = {
         ...(p.groups.includes(0) ? ['member of group 0'] : []),
       ]),
     ],
-    ok: `runs as non-root ${ctx.p ? `${ctx.p.uid}:${ctx.p.gid}` : ''}`.trim(),
+    ok: ctx.p ? `runs as non-root ${ctx.p.uid}:${ctx.p.gid}` : 'runs as non-root',
   }),
 
   capabilities: (ctx) => ({
     problems: [
-      ...configOrMissing(ctx, (c) => [
-        ...((c.HostConfig.CapDrop ?? []).some((x) => x.toUpperCase() === 'ALL') ? [] : ['capabilities not dropped (no --cap-drop ALL)']),
-        ...(c.HostConfig.CapAdd?.length ? [`capabilities added: ${c.HostConfig.CapAdd.join(', ')}`] : []),
-        ...(c.HostConfig.Privileged ? ['privileged'] : []),
-      ]),
+      ...configOrMissing(ctx, (c) => {
+        const h = c.HostConfig;
+        const dropsAll = (h.CapDrop ?? []).some((x) => x.toUpperCase() === 'ALL');
+        return [
+          ...(dropsAll ? [] : ['capabilities not dropped (no --cap-drop ALL)']),
+          ...(h.CapAdd?.length ? [`capabilities added: ${h.CapAdd.join(', ')}`] : []),
+          ...(h.Privileged ? ['privileged'] : []),
+        ];
+      }),
       ...probeOrMissing(ctx, (p) =>
         ['CapInh', 'CapPrm', 'CapEff', 'CapBnd', 'CapAmb'].flatMap((cap) => {
           const v = p.status[cap];
-          return v === undefined ? [`${cap} unreadable`] : ZERO_CAPS.test(v) ? [] : [`${cap}=${v}`];
+          if (v === undefined) return [`${cap} unreadable`];
+          return ZERO_CAPS.test(v) ? [] : [`${cap}=${v}`];
         }),
       ),
     ],
@@ -337,11 +422,7 @@ const CHECKS: Record<CheckId, CheckFn> = {
 
   noNewPrivileges: (ctx) => ({
     problems: [
-      ...configOrMissing(ctx, (c) => {
-        const opts = (c.HostConfig.SecurityOpt ?? []).filter((o) => /^no-new-privileges([:=](true|false))?$/.test(o));
-        const last = opts.at(-1);
-        return last && !/false$/.test(last) ? [] : ['no-new-privileges not set'];
-      }),
+      ...configOrMissing(ctx, (c) => ((c.HostConfig.SecurityOpt ?? []).includes('no-new-privileges') ? [] : ['no-new-privileges not set'])),
       ...probeOrMissing(ctx, (p) => (p.status.NoNewPrivs === '1' ? [] : [`NoNewPrivs=${p.status.NoNewPrivs ?? 'unreadable'}`])),
     ],
     ok: 'no-new-privileges is set',
@@ -349,34 +430,63 @@ const CHECKS: Record<CheckId, CheckFn> = {
 
   seccomp: (ctx) => ({
     problems: [
+      // A daemon-wide custom profile can be as permissive as allow-all: only Docker's own counts.
+      ...(ctx.info?.SecurityOptions.includes(DAEMON_SECCOMP) ? [] : [`daemon seccomp profile is not Docker's builtin (${DAEMON_SECCOMP})`]),
       ...configOrMissing(ctx, (c) => [
-        ...((c.HostConfig.SecurityOpt ?? []).some((o) => /^seccomp[:=]unconfined$/.test(o)) ? ['seccomp=unconfined'] : []),
+        ...(c.HostConfig.SecurityOpt ?? []).filter((o) => /^seccomp[:=]/.test(o)).map((o) => `container seccomp override ${o.slice(0, 40)}`),
         ...(c.HostConfig.Privileged ? ['privileged disables seccomp'] : []),
       ]),
       ...probeOrMissing(ctx, (p) => (p.status.Seccomp === '2' ? [] : [`Seccomp=${p.status.Seccomp ?? 'unreadable'}`])),
     ],
-    ok: 'seccomp filter active',
+    ok: "Docker's builtin seccomp profile is active",
+  }),
+
+  hardening: (ctx) => ({
+    problems: [
+      ...configOrMissing(ctx, (c) => {
+        const h = c.HostConfig;
+        const securityOpt = h.SecurityOpt ?? [];
+        const masked = new Set(h.MaskedPaths ?? []);
+        const readonly = new Set(h.ReadonlyPaths ?? []);
+        const unmasked = DEFAULT_MASKED_PATHS.filter((x) => !masked.has(x));
+        const writable = DEFAULT_READONLY_PATHS.filter((x) => !readonly.has(x));
+        return [
+          // Deny by default: an LSM opt-out, systempaths=unconfined or a profile all land here.
+          ...(sameList(securityOpt, SECURITY_OPTS) ? [] : [`security options are ${JSON.stringify(securityOpt)}, not ${JSON.stringify(SECURITY_OPTS)}`]),
+          ...(unmasked.length ? [`not masked: ${unmasked.join(', ')}`] : []),
+          ...(writable.length ? [`not read-only: ${writable.join(', ')}`] : []),
+          ...(ALLOWED_RUNTIMES.includes(h.Runtime) ? [] : [`runtime ${h.Runtime} is not one of ${ALLOWED_RUNTIMES.join(', ')}`]),
+        ];
+      }),
+      ...probeOrMissing(ctx, (p) => {
+        if (!p.mounts) return ['mounts unreadable'];
+        const sys = mountAt(p, '/proc/sys');
+        return [
+          ...(sys.length > 0 && sys.every((m) => options(m).includes('ro')) ? [] : ['/proc/sys is not mounted read-only']),
+          ...(mountAt(p, '/proc/kcore').length > 0 ? [] : ['/proc/kcore is not masked']),
+        ];
+      }),
+    ],
+    ok: `only ${SECURITY_OPTS.join(', ')}; Docker's /proc and /sys masks in place; runtime ${ctx.c?.HostConfig.Runtime ?? ''}`.trim(),
   }),
 
   namespaces: (ctx) => ({
     problems: [
       ...configOrMissing(ctx, (c) => {
-        const modes = {
-          pid: c.HostConfig.PidMode,
-          ipc: c.HostConfig.IpcMode,
-          uts: c.HostConfig.UTSMode,
-          userns: c.HostConfig.UsernsMode,
-          cgroupns: c.HostConfig.CgroupnsMode,
-        };
-        return Object.entries(modes).flatMap(([ns, mode]) =>
-          mode === undefined ? [`${ns} namespace mode unknown`] : mode === 'host' || mode.startsWith('container:') ? [`${ns} namespace shared: ${mode}`] : [],
-        );
+        const h = c.HostConfig;
+        const shared = Object.entries({ pid: h.PidMode, uts: h.UTSMode, userns: h.UsernsMode, cgroupns: h.CgroupnsMode }).flatMap(([ns, mode]) => {
+          if (mode === undefined) return [`${ns} namespace mode unknown`];
+          return isShared(mode) ? [`${ns} namespace shared: ${mode}`] : [];
+        });
+        return [...shared, ...(h.IpcMode === 'none' ? [] : [`ipc mode is ${h.IpcMode}, not none`])];
       }),
-      ...probeOrMissing(ctx, (p) =>
-        p.pid1 !== null && p.pid1.join('\0') === ctx.e.idleCommand.join('\0') ? [] : ['PID 1 is not the sandbox process (host PID namespace?)'],
-      ),
+      ...probeOrMissing(ctx, (p) => [
+        ...(p.pid1 !== null && sameList(p.pid1, ctx.e.idleCommand) ? [] : ['PID 1 is not the sandbox process (host PID namespace?)']),
+        ...(mountAt(p, '/dev/shm').length === 0 ? [] : ['/dev/shm is mounted (shared memory available)']),
+        ...NAMESPACE_KINDS.flatMap((kind) => namespaceProblems(kind, p.namespaces[kind], ctx.e.hostNamespaces[kind])),
+      ]),
     ],
-    ok: 'own pid, ipc, uts, user and cgroup namespaces',
+    ok: `own ${NAMESPACE_KINDS.join(', ')} namespaces; no IPC (no /dev/shm)`,
   }),
 
   resourceLimits: (ctx) => {
@@ -385,11 +495,14 @@ const CHECKS: Record<CheckId, CheckFn> = {
       problems: [
         ...configOrMissing(ctx, (c) => {
           const h = c.HostConfig;
+          const pidsOk = h.PidsLimit !== null && h.PidsLimit > 0 && h.PidsLimit <= MAX_PIDS;
+          const memoryOk = h.Memory > 0 && h.Memory <= MAX_MEMORY;
+          const cpusOk = h.NanoCpus > 0 && h.NanoCpus <= MAX_NANO_CPUS;
           return [
-            ...(h.PidsLimit !== null && h.PidsLimit > 0 && h.PidsLimit <= MAX_PIDS ? [] : [`pids limit ${h.PidsLimit ?? 'unset'}`]),
-            ...(h.Memory > 0 && h.Memory <= MAX_MEMORY ? [] : [`memory limit ${h.Memory || 'unset'}`]),
+            ...(pidsOk ? [] : [`pids limit ${h.PidsLimit ?? 'unset'}`]),
+            ...(memoryOk ? [] : [`memory limit ${h.Memory || 'unset'}`]),
             ...(h.MemorySwap === h.Memory ? [] : [`swap allowed (memory-swap ${h.MemorySwap})`]),
-            ...(h.NanoCpus > 0 && h.NanoCpus <= MAX_NANO_CPUS ? [] : [`cpu limit ${h.NanoCpus || 'unset'}`]),
+            ...(cpusOk ? [] : [`cpu limit ${h.NanoCpus || 'unset'}`]),
           ];
         }),
         ...probeOrMissing(ctx, (p) => [
@@ -403,6 +516,8 @@ const CHECKS: Record<CheckId, CheckFn> = {
 
   hostServicesUnreachable: (ctx) => {
     const { e } = ctx;
+    const admin = e.adminPort === undefined ? 'no admin UI port given' : `admin UI port ${e.adminPort}`;
+    const db = e.dbPath ? 'guardian DB not visible' : 'no guardian database configured';
     return {
       problems: [
         ...(ctx.canaryHits > 0 ? [`host loopback canary received ${ctx.canaryHits} connection(s)`] : []),
@@ -413,10 +528,7 @@ const CHECKS: Record<CheckId, CheckFn> = {
           ...(e.dbPath ? requireResults(p.paths, (x) => x.path === e.dbPath, (r) => r === 'ENOENT', `guardian DB ${e.dbPath}`) : []),
         ]),
       ],
-      ok: [
-        `host loopback unreachable (canary port ${e.canaryPort}${e.adminPort === undefined ? ', no admin UI port given' : `, admin UI port ${e.adminPort}`})`,
-        e.dbPath ? 'guardian DB not visible' : 'no guardian database configured',
-      ].join('; '),
+      ok: `host loopback unreachable (canary port ${e.canaryPort}, ${admin}); ${db}`,
     };
   },
 
@@ -428,28 +540,30 @@ const CHECKS: Record<CheckId, CheckFn> = {
   }),
 };
 
-function unexpectedMounts(mounts: NonNullable<ProbeResult['mounts']>, ctx: Ctx): Problems {
+/** Is this mount one Docker makes in every container (or the guardian socket)? */
+function expectedMount(m: Mount, ctx: Ctx): boolean {
+  if (Object.hasOwn(DOCKER_MOUNTS, m.mountPoint)) {
+    const types = DOCKER_MOUNTS[m.mountPoint];
+    return !types || types.includes(m.fsType);
+  }
+  if (DOCKER_FILES.includes(m.mountPoint)) {
+    // Docker writes these per container under .../containers/<id>/.
+    const file = m.mountPoint.slice('/etc/'.length);
+    return ctx.c !== null && m.root.endsWith(`/containers/${ctx.c.Id}/${file}`);
+  }
+  if (m.mountPoint.startsWith('/proc/') || m.mountPoint.startsWith('/sys/')) {
+    // Docker masks these with read-only proc/sysfs rebinds or empty tmpfs (or its /dev/null).
+    return m.fsType === 'proc' || m.fsType === 'sysfs' || (m.fsType === 'tmpfs' && (m.root === '/' || m.root === '/null'));
+  }
+  return false;
+}
+
+function unexpectedMounts(mounts: Mount[], ctx: Ctx): Problems {
   const problems: Problems = [];
   let socketMounts = 0;
   for (const m of mounts) {
-    const where = `${m.mountPoint} (${m.fsType} ${m.root})`;
-    if (m.mountPoint in DOCKER_MOUNTS) {
-      const types = DOCKER_MOUNTS[m.mountPoint];
-      if (types && !types.includes(m.fsType)) problems.push(`unexpected mount ${where}`);
-    } else if (DOCKER_FILES.includes(m.mountPoint)) {
-      // Docker writes these per container under .../containers/<id>/.
-      const file = m.mountPoint.slice('/etc/'.length);
-      if (!ctx.c || !m.root.endsWith(`/containers/${ctx.c.Id}/${file}`)) problems.push(`unexpected mount ${where}`);
-    } else if (m.mountPoint === SANDBOX_SOCKET) {
-      if (m.root.endsWith(ctx.e.socketPath)) socketMounts++;
-      else problems.push(`unexpected mount ${where}`);
-    } else if (m.mountPoint.startsWith('/proc/') || m.mountPoint.startsWith('/sys/')) {
-      // Docker masks these with read-only proc/sysfs rebinds or empty tmpfs (or its /dev/null).
-      const masked = m.fsType === 'proc' || m.fsType === 'sysfs' || (m.fsType === 'tmpfs' && (m.root === '/' || m.root === '/null'));
-      if (!masked) problems.push(`unexpected mount ${where}`);
-    } else {
-      problems.push(`unexpected mount ${where}`);
-    }
+    if (m.mountPoint === SANDBOX_SOCKET && m.root.endsWith(ctx.e.socketPath)) socketMounts++;
+    else if (!expectedMount(m, ctx)) problems.push(`unexpected mount ${m.mountPoint} (${m.fsType} ${m.root})`);
   }
   if (socketMounts !== 1) problems.push(`guardian socket mounted ${socketMounts} times inside`);
   return problems;

@@ -1,20 +1,21 @@
 import { execFile } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
-import { chmodSync, mkdtempSync, rmSync } from 'node:fs';
+import { chmodSync, mkdtempSync, readlinkSync, rmSync } from 'node:fs';
 import { type AddressInfo, createServer, type Server } from 'node:net';
 import { homedir, networkInterfaces, tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { z } from 'zod';
 import type { Guardian } from './guardian-api.js';
 import { serveGuardianSocket } from './guardian-socket.js';
-import { evaluateIsolation, type IsolationExpectations, type IsolationResult, probeTargets } from './sandbox-checks.js';
-import { parseProbeOutput, probeScript, SANDBOX_SOCKET } from './sandbox-probe.js';
+import { evaluateIsolation, type IsolationExpectations, type IsolationResult, NAMESPACE_KINDS, probeTargets } from './sandbox-checks.js';
+import { SANDBOX_SOCKET, SECURITY_OPTS, TMP_TMPFS_OPTIONS } from './sandbox-contract.js';
+import { parseProbeOutput, probeScript } from './sandbox-probe.js';
 
 // Contain mode: how the untrusted agent container is run (design doc §9.1-9.2), and
 // runContain, which launches it and verifies isolation before the agent starts (§9.3).
 // The guardian socket is the only thing the container gets from the host.
 
-export { SANDBOX_SOCKET } from './sandbox-probe.js';
+export { SANDBOX_SOCKET } from './sandbox-contract.js';
 
 /** The `nonroot` user of the distroless runtime image (sandbox/Dockerfile). */
 const IMAGE_USER = '65532:65532';
@@ -42,8 +43,7 @@ export function hardenedRunFlags({ socketPath, user }: RunFlagOptions): string[]
     '--read-only',
     '--cap-drop',
     'ALL',
-    '--security-opt',
-    'no-new-privileges',
+    ...SECURITY_OPTS.flatMap((o) => ['--security-opt', o]),
     '--pids-limit',
     '64',
     '--memory',
@@ -54,7 +54,7 @@ export function hardenedRunFlags({ socketPath, user }: RunFlagOptions): string[]
     '--cpus',
     '1',
     '--tmpfs',
-    '/tmp:rw,nosuid,nodev,noexec,size=64m',
+    `/tmp:${TMP_TMPFS_OPTIONS}`,
     '--user',
     user,
     '--mount',
@@ -223,6 +223,19 @@ export function hostAddresses(): string[] {
     .map((a) => a?.address ?? '');
 }
 
+/** This process's namespaces, the reference the sandbox must not share. */
+export function launcherNamespaces(): Record<string, string> {
+  const out: Record<string, string> = {};
+  for (const ns of NAMESPACE_KINDS) {
+    try {
+      out[ns] = readlinkSync(`/proc/self/ns/${ns}`);
+    } catch (e) {
+      out[ns] = `error:${(e as NodeJS.ErrnoException).code ?? 'unknown'}`;
+    }
+  }
+  return out;
+}
+
 export interface CheckContainerOptions {
   docker: string;
   container: string;
@@ -321,6 +334,8 @@ export async function runContain(o: ContainOptions): Promise<ContainResult> {
       dbPath: o.dbPath,
       hostAddresses: hostAddresses(),
       imageEnv: image.Env ?? [],
+      hostNamespaces: launcherNamespaces(),
+      dockerSockets: await hostDockerSocketPaths(docker),
     };
     const result = await checkContainer({ docker, container: name, info, expectations, canary });
     const report: ContainReport = { ...result, platform };

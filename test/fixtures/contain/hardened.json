@@ -7,7 +7,7 @@
       "setInterval(() => {}, 1 << 30)"
     ],
     "hostHome": "/home/alice",
-    "canaryPort": 36927,
+    "canaryPort": 39393,
     "hostAddresses": [
       "192.0.2.10",
       "192.0.2.11"
@@ -16,6 +16,20 @@
       "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
       "SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt",
       "NODE_ENV=production"
+    ],
+    "hostNamespaces": {
+      "cgroup": "cgroup:[4026531835]",
+      "ipc": "ipc:[4026531839]",
+      "mnt": "mnt:[4026533480]",
+      "net": "net:[4026531833]",
+      "pid": "pid:[4026531836]",
+      "user": "user:[4026533478]",
+      "uts": "uts:[4026531838]"
+    },
+    "dockerSockets": [
+      "/var/run/docker.sock",
+      "/run/docker.sock",
+      "/run/user/1000/docker.sock"
     ]
   },
   "info": {
@@ -25,8 +39,8 @@
     ]
   },
   "inspect": {
-    "Id": "df97a5f089aa3c674c1b6f5bad77ed89bf44aabeb80726947e35ef1e4cec4b5d",
-    "Created": "2026-10-25T20:19:18.555036622Z",
+    "Id": "de61418c6d951fbbac8d18a3bc96be62c6553d2b70a0fce7fe4cdc5017a4318a",
+    "Created": "2026-10-25T21:12:37.466339945Z",
     "Path": "/nodejs/bin/node",
     "Args": [
       "-e",
@@ -39,16 +53,16 @@
       "Restarting": false,
       "OOMKilled": false,
       "Dead": false,
-      "Pid": 162137,
+      "Pid": 317343,
       "ExitCode": 0,
       "Error": "",
-      "StartedAt": "2026-10-25T20:19:18.645328117Z",
+      "StartedAt": "2026-10-25T21:12:37.662580702Z",
       "FinishedAt": "0001-01-01T00:00:00Z"
     },
-    "Image": "sha256:51928d282787cf13a924f7f7bb0bb0d4f0d47655a8f4b669fb538fa7559db1f1",
-    "ResolvConfPath": "/var/lib/docker/containers/df97a5f089aa3c674c1b6f5bad77ed89bf44aabeb80726947e35ef1e4cec4b5d/resolv.conf",
-    "HostnamePath": "/var/lib/docker/containers/df97a5f089aa3c674c1b6f5bad77ed89bf44aabeb80726947e35ef1e4cec4b5d/hostname",
-    "HostsPath": "/var/lib/docker/containers/df97a5f089aa3c674c1b6f5bad77ed89bf44aabeb80726947e35ef1e4cec4b5d/hosts",
+    "Image": "sha256:f67b8eb4499f1c32ec406ce9823e54ed887d9cfdd40ef13182d6d34fbd579df9",
+    "ResolvConfPath": "/var/lib/docker/containers/de61418c6d951fbbac8d18a3bc96be62c6553d2b70a0fce7fe4cdc5017a4318a/resolv.conf",
+    "HostnamePath": "/var/lib/docker/containers/de61418c6d951fbbac8d18a3bc96be62c6553d2b70a0fce7fe4cdc5017a4318a/hostname",
+    "HostsPath": "/var/lib/docker/containers/de61418c6d951fbbac8d18a3bc96be62c6553d2b70a0fce7fe4cdc5017a4318a/hosts",
     "LogPath": "",
     "Name": "/kordn-test-fx",
     "RestartCount": 0,
@@ -88,7 +102,7 @@
       "DnsSearch": [],
       "ExtraHosts": null,
       "GroupAdd": null,
-      "IpcMode": "private",
+      "IpcMode": "none",
       "Cgroup": "",
       "Links": null,
       "OomScoreAdj": 0,
@@ -196,7 +210,7 @@
       }
     ],
     "Config": {
-      "Hostname": "df97a5f089aa",
+      "Hostname": "de61418c6d95",
       "Domainname": "",
       "User": "1000:100",
       "AttachStdin": false,
@@ -223,8 +237,8 @@
       "Labels": {}
     },
     "NetworkSettings": {
-      "SandboxID": "9c8515e095e4875c088418e61f451aa747d8b83748ed41e7239316f420b91251",
-      "SandboxKey": "/var/run/docker/netns/9c8515e095e4",
+      "SandboxID": "d1e4cfaeedeada8545c4482bd773101418c3689e234d3ddd0081398d32fb429c",
+      "SandboxKey": "/var/run/docker/netns/d1e4cfaeedea",
       "Ports": {},
       "Networks": {
         "none": {
@@ -234,7 +248,7 @@
           "DriverOpts": null,
           "GwPriority": 0,
           "NetworkID": "88dc65bc86bf093eb1b4b703e718f0ab4aa985bd32a68e9b0fc5f64c6957f3b9",
-          "EndpointID": "8ef9d14aef37bb6ac0092f366b1af9489e6f5246d8b3a3faa3b8945f2319b85c",
+          "EndpointID": "1797fd0fa6de915791a2c305e1bbc7384010cee09625fa3b35c1e64bc37e2202",
           "Gateway": "",
           "IPAddress": "",
           "MacAddress": "",
@@ -248,7 +262,7 @@
     },
     "ImageManifestDescriptor": {
       "mediaType": "application/vnd.oci.image.manifest.v1+json",
-      "digest": "sha256:adc00ccf18af13f02b88f2915247731252c39a670d9315cc72b319579caec65a",
+      "digest": "sha256:1d1d03561f428075ec8e58f5f4b1e96ec85b766038d48cce24226c0c19a11ff2",
       "size": 5413,
       "platform": {
         "architecture": "amd64",
@@ -331,13 +345,6 @@
         "options": "rw,nosuid,nodev,noexec,relatime"
       },
       {
-        "mountPoint": "/dev/shm",
-        "root": "/",
-        "fsType": "tmpfs",
-        "source": "shm",
-        "options": "rw,nosuid,nodev,noexec,relatime"
-      },
-      {
         "mountPoint": "/tmp",
         "root": "/",
         "fsType": "tmpfs",
@@ -346,21 +353,21 @@
       },
       {
         "mountPoint": "/etc/hostname",
-        "root": "/@/var/lib/docker/containers/df97a5f089aa3c674c1b6f5bad77ed89bf44aabeb80726947e35ef1e4cec4b5d/hostname",
+        "root": "/@/var/lib/docker/containers/de61418c6d951fbbac8d18a3bc96be62c6553d2b70a0fce7fe4cdc5017a4318a/hostname",
         "fsType": "btrfs",
         "source": "/dev/nvme0n1p2",
         "options": "ro,relatime"
       },
       {
         "mountPoint": "/etc/hosts",
-        "root": "/@/var/lib/docker/containers/df97a5f089aa3c674c1b6f5bad77ed89bf44aabeb80726947e35ef1e4cec4b5d/hosts",
+        "root": "/@/var/lib/docker/containers/de61418c6d951fbbac8d18a3bc96be62c6553d2b70a0fce7fe4cdc5017a4318a/hosts",
         "fsType": "btrfs",
         "source": "/dev/nvme0n1p2",
         "options": "ro,relatime"
       },
       {
         "mountPoint": "/etc/resolv.conf",
-        "root": "/@/var/lib/docker/containers/df97a5f089aa3c674c1b6f5bad77ed89bf44aabeb80726947e35ef1e4cec4b5d/resolv.conf",
+        "root": "/@/var/lib/docker/containers/de61418c6d951fbbac8d18a3bc96be62c6553d2b70a0fce7fe4cdc5017a4318a/resolv.conf",
         "fsType": "btrfs",
         "source": "/dev/nvme0n1p2",
         "options": "ro,relatime"
@@ -584,6 +591,10 @@
         "result": "ENOENT"
       },
       {
+        "path": "/run/user/1000/docker.sock",
+        "result": "ENOENT"
+      },
+      {
         "path": "/run/host-services/ssh-auth.sock",
         "result": "ENOENT"
       },
@@ -630,12 +641,12 @@
       },
       {
         "host": "127.0.0.1",
-        "port": 36927,
+        "port": 39393,
         "result": "ECONNREFUSED"
       },
       {
         "host": "::1",
-        "port": 36927,
+        "port": 39393,
         "result": "ECONNREFUSED"
       }
     ],
@@ -653,6 +664,15 @@
       "-e",
       "setInterval(() => {}, 1 << 30)"
     ],
+    "namespaces": {
+      "cgroup": "cgroup:[4026533174]",
+      "ipc": "ipc:[4026533167]",
+      "mnt": "mnt:[4026533156]",
+      "net": "net:[4026533175]",
+      "pid": "pid:[4026533173]",
+      "user": "user:[4026531837]",
+      "uts": "uts:[4026533166]"
+    },
     "socket": {
       "connected": true,
       "error": null,

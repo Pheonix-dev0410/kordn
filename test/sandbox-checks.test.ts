@@ -24,6 +24,8 @@ const expectations: IsolationExpectations = {
   dbPath: '/home/alice/.kordn/kordn.sqlite',
   hostAddresses: ['192.168.1.20'],
   imageEnv: ['PATH=/usr/bin', 'NODE_ENV=production'],
+  hostNamespaces: { net: 'net:[1]' },
+  dockerSockets: ['/var/run/docker.sock', '/run/docker.sock', '/run/user/1000/docker.sock'],
 };
 
 describe('probeTargets', () => {
@@ -57,11 +59,12 @@ describe('probeTargets', () => {
     );
   });
 
-  it('looks for docker sockets, the home dir, the SSH agent and the guardian DB', () => {
+  it('looks for every docker socket, the home dir, the SSH agent and the guardian DB', () => {
     expect(params.absentPaths).toEqual(
       expect.arrayContaining([
         '/var/run/docker.sock',
         '/run/docker.sock',
+        '/run/user/1000/docker.sock',
         '/home/alice',
         '/run/user/1000/ssh-agent.sock',
         '/home/alice/.kordn/kordn.sqlite',
@@ -82,10 +85,12 @@ type Facts = IsolationFacts & {
   info: { SecurityOptions: string[] };
 };
 
-/** The captured container, on a daemon that also reports rootless: every check passes. */
+/** The captured container as a rootless daemon would run it: the daemon reports rootless and
+ * the container gets its own user namespace. Every check passes. */
 function safe(): Facts {
   const f = structuredClone(fixture) as unknown as Facts;
   f.info.SecurityOptions.push('name=rootless');
+  f.probe.namespaces.user = 'user:[4026599999]';
   return f;
 }
 
@@ -280,9 +285,9 @@ const cases: [string, (f: Facts) => void, CheckId[]][] = [
       f.inspect.HostConfig.SecurityOpt = [];
       f.probe.status.NoNewPrivs = '0';
     },
-    ['noNewPrivileges'],
+    ['noNewPrivileges', 'hardening'],
   ],
-  ['no-new-privileges:false', (f) => void (f.inspect.HostConfig.SecurityOpt = ['no-new-privileges:false']), ['noNewPrivileges']],
+  ['no-new-privileges:false', (f) => void (f.inspect.HostConfig.SecurityOpt = ['no-new-privileges:false']), ['noNewPrivileges', 'hardening']],
   ['NoNewPrivs off at runtime only', (f) => void (f.probe.status.NoNewPrivs = '0'), ['noNewPrivileges']],
 
   [
@@ -291,9 +296,9 @@ const cases: [string, (f: Facts) => void, CheckId[]][] = [
       f.inspect.HostConfig.SecurityOpt.push('seccomp=unconfined');
       f.probe.status.Seccomp = '0';
     },
-    ['seccomp'],
+    ['seccomp', 'hardening'],
   ],
-  ['seccomp:unconfined in the config only', (f) => void f.inspect.HostConfig.SecurityOpt.push('seccomp:unconfined'), ['seccomp']],
+  ['seccomp:unconfined in the config only', (f) => void f.inspect.HostConfig.SecurityOpt.push('seccomp:unconfined'), ['seccomp', 'hardening']],
   ['no seccomp filter at runtime only', (f) => void (f.probe.status.Seccomp = '0'), ['seccomp']],
 
   [
@@ -329,6 +334,53 @@ const cases: [string, (f: Facts) => void, CheckId[]][] = [
   ['pids unlimited at runtime only', (f) => void (f.probe.pidsMax = 'max'), ['resourceLimits']],
   ['cgroup files unreadable', (f) => void (f.probe.memoryMax = 'error:ENOENT'), ['resourceLimits']],
 
+  // ---- review round 1: settings that used to pass ----
+  ['a permissive custom seccomp profile on the container', (f) => void f.inspect.HostConfig.SecurityOpt.push('seccomp={"defaultAction":"SCMP_ACT_ALLOW"}'), ['seccomp', 'hardening']],
+  [
+    'a custom seccomp profile set daemon-wide',
+    (f) => void (f.info.SecurityOptions = f.info.SecurityOptions.map((o) => (o.startsWith('name=seccomp') ? 'name=seccomp,profile=/etc/docker/seccomp.json' : o))),
+    ['seccomp'],
+  ],
+  ['a daemon without seccomp', (f) => void (f.info.SecurityOptions = f.info.SecurityOptions.filter((o) => !o.startsWith('name=seccomp'))), ['seccomp']],
+  [
+    'systempaths=unconfined: /proc and /sys unmasked',
+    (f) => {
+      f.inspect.HostConfig.SecurityOpt.push('systempaths=unconfined');
+      f.inspect.HostConfig.MaskedPaths = [];
+      f.inspect.HostConfig.ReadonlyPaths = [];
+      f.probe.mounts = (f.probe.mounts ?? []).filter((m) => !/^\/(proc|sys)\/./.test(m.mountPoint) || m.mountPoint === '/sys/fs/cgroup');
+    },
+    ['hardening'],
+  ],
+  ['a default masked path dropped from the config', (f) => void (f.inspect.HostConfig.MaskedPaths = f.inspect.HostConfig.MaskedPaths.filter((p) => p !== '/proc/kcore')), ['hardening']],
+  ['a default read-only path dropped from the config', (f) => void (f.inspect.HostConfig.ReadonlyPaths = f.inspect.HostConfig.ReadonlyPaths.filter((p) => p !== '/proc/sys')), ['hardening']],
+  ['/proc/sys writable at runtime', (f) => void ((f.probe.mounts?.find((m) => m.mountPoint === '/proc/sys') as { options: string }).options = 'rw,nosuid'), ['hardening']],
+  ['/proc/kcore not masked at runtime', (f) => void (f.probe.mounts = (f.probe.mounts ?? []).filter((m) => m.mountPoint !== '/proc/kcore')), ['hardening']],
+  ['apparmor=unconfined', (f) => void f.inspect.HostConfig.SecurityOpt.push('apparmor=unconfined'), ['hardening']],
+  ['label=disable', (f) => void f.inspect.HostConfig.SecurityOpt.push('label=disable'), ['hardening']],
+  ['another OCI runtime', (f) => void (f.inspect.HostConfig.Runtime = 'runsc'), ['hardening']],
+  ['a device cgroup rule', (f) => void (f.inspect.HostConfig.DeviceCgroupRules = ['a *:* rwm'] as never), ['onlyGuardianSocket']],
+  ['a device request (--gpus)', (f) => void (f.inspect.HostConfig.DeviceRequests = [{ Driver: 'nvidia', Count: -1 }] as never), ['onlyGuardianSocket']],
+  [
+    'a /tmp tmpfs whose later options re-enable exec, suid and dev',
+    (f) => {
+      f.inspect.HostConfig.Tmpfs = { '/tmp': 'rw,nosuid,nodev,noexec,size=64m,exec,suid,dev' };
+      (f.probe.mounts?.find((m) => m.mountPoint === '/tmp') as { options: string }).options = 'rw,relatime';
+    },
+    ['readOnlyRootfs'],
+  ],
+  ['/tmp mounted exec at runtime only', (f) => void ((f.probe.mounts?.find((m) => m.mountPoint === '/tmp') as { options: string }).options = 'rw,nosuid,nodev,relatime'), ['readOnlyRootfs']],
+  ['a different /tmp size', (f) => void (f.inspect.HostConfig.Tmpfs = { '/tmp': 'rw,nosuid,nodev,noexec,size=4g' }), ['readOnlyRootfs']],
+  ['a private IPC namespace instead of none', (f) => void (f.inspect.HostConfig.IpcMode = 'private'), ['namespaces']],
+  ['/dev/shm mounted at runtime', (f) => addMount(f, '/dev/shm', '/', 'tmpfs'), ['onlyGuardianSocket', 'namespaces']],
+  ["sharing the launcher's (non-initial) mount namespace", (f) => void (f.probe.namespaces.mnt = f.expectations.hostNamespaces.mnt ?? ''), ['namespaces']],
+  ["sharing the launcher's network namespace", (f) => void (f.probe.namespaces.net = f.expectations.hostNamespaces.net ?? ''), ['namespaces']],
+  ["the host's initial user namespace (rootful, no userns-remap)", (f) => void (f.probe.namespaces.user = 'user:[4026531837]'), ['namespaces']],
+  ["the host's initial pid namespace", (f) => void (f.probe.namespaces.pid = 'pid:[4026531836]'), ['namespaces']],
+  ['a namespace link unreadable', (f) => void (f.probe.namespaces.uts = 'error:EACCES'), ['namespaces']],
+  ['a namespace missing from the probe', (f) => void delete f.probe.namespaces.cgroup, ['namespaces']],
+  ['the rootless daemon socket visible inside', (f) => setPath(f, f.expectations.dockerSockets.at(-1) ?? '', 'present'), ['onlyGuardianSocket']],
+
   [
     'the guardian socket is unreachable',
     (f) => void (f.probe.socket = { connected: false, error: 'ECONNREFUSED', response: null }),
@@ -346,9 +398,9 @@ describe('evaluateIsolation', () => {
     expect(report.imageId).toBe(fixture.inspect.Image);
   });
 
-  it('reports Guard for the captured container: this host runs rootful Docker', () => {
+  it('reports Guard for the captured container: rootful Docker, so it shares the host user namespace', () => {
     const report = evaluateIsolation(structuredClone(fixture) as unknown as IsolationFacts);
-    expect(report.checks.filter((c) => !c.pass).map((c) => c.id)).toEqual(['rootless']);
+    expect(report.checks.filter((c) => !c.pass).map((c) => c.id)).toEqual(['rootless', 'namespaces']);
     expect(report.mode).toBe('guard');
   });
 
@@ -379,6 +431,7 @@ describe('evaluateIsolation fails closed', () => {
     'capabilities',
     'noNewPrivileges',
     'seccomp',
+    'hardening',
     'namespaces',
     'resourceLimits',
   ];
@@ -403,10 +456,10 @@ describe('evaluateIsolation fails closed', () => {
     expect(failing(f)).toEqual([]);
   });
 
-  it('with unreadable docker info, rootless fails', () => {
+  it('with unreadable docker info, rootless and seccomp fail', () => {
     const f = safe();
     f.info = null as never;
-    expect(failing(f)).toEqual(['rootless']);
+    expect(failing(f)).toEqual(['rootless', 'seccomp']);
   });
 
   it('a probe that skipped its targets fails every check that needs them', () => {
