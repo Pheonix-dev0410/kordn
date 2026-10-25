@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import policyJson from '../examples/policy.json' with { type: 'json' };
 import { createFakeGuardian } from '../src/fake-guardian.js';
-import { APPROVAL_TTL_SEC, Policy, TOOL_OUTPUTS, type ToolName } from '../src/schema.js';
+import { APPROVAL_TTL_SEC, AuditEvent, Policy, TOOL_OUTPUTS, type ToolName } from '../src/schema.js';
 
 const policy = Policy.parse(policyJson);
 const agent = policy.agentId;
@@ -168,11 +168,25 @@ describe('fake guardian: one agent', () => {
       error: { code: 'UNKNOWN_ACTION' },
     });
     const denied = await g.listActivity({ events: ['policy.denied'] });
-    expect(denied.map((e) => [e.agent, e.reasonCode])).toEqual([
-      ['other-agent', 'UNKNOWN_ACTION'],
-      ['other-agent', 'UNKNOWN_ACTION'],
+    expect(denied.map((e) => [e.agent, e.reasonCode, e.metadata.unknownAgent])).toEqual([
+      [agent, 'UNKNOWN_ACTION', 'other-agent'],
+      [agent, 'UNKNOWN_ACTION', 'other-agent'],
     ]);
     expect(await g.listActivity({ events: ['read.executed', 'transfer.succeeded'] })).toEqual([]);
+  });
+
+  it.each([
+    ['undefined', undefined, 'undefined'],
+    ['a 1000-char string', 'x'.repeat(1000), 'x'.repeat(64)],
+    ['an invalid agent id', 'Not An Agent!', 'Not An Agent!'],
+  ])('logs a call from %s as a valid audit event', async (_, caller, recorded) => {
+    const g = createFakeGuardian({ policy });
+    const r = await g.handleCall(caller as unknown as string, 'af_get_balance', { resourceId: policy.resourceId });
+    expect(r).toMatchObject({ ok: false, error: { code: 'UNKNOWN_ACTION' } });
+    const events = await g.listActivity();
+    expect(events).toHaveLength(1);
+    expect(events.every((e) => AuditEvent.safeParse(e).success)).toBe(true);
+    expect(events[0]).toMatchObject({ agent, event: 'policy.denied', metadata: { unknownAgent: recorded } });
   });
 
   it('ignores revoke for another agent', async () => {

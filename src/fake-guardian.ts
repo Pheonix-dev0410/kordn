@@ -200,7 +200,16 @@ export function createFakeGuardian(options: FakeGuardianOptions): Guardian {
       const name = ToolName.safeParse(tool);
       const toolName = name.success ? name.data : null;
       // One guardian serves one agent. Anyone else is unknown, never governed by this policy.
-      if (agentId !== policy.agentId) return deny(agentId, toolName, 'UNKNOWN_ACTION');
+      // Logged under our own agent so the event stays a valid AuditEvent; the caller's id is
+      // kept, truncated, as data.
+      if (agentId !== policy.agentId) {
+        log('policy.denied', policy.agentId, {
+          tool: toolName,
+          reasonCode: 'UNKNOWN_ACTION',
+          metadata: { unknownAgent: String(agentId).slice(0, 64) },
+        });
+        return { ok: false, error: { code: 'UNKNOWN_ACTION', message: 'UNKNOWN_ACTION' } };
+      }
       if (revoked.has(agentId)) return deny(agentId, toolName, 'SESSION_REVOKED');
       if (!toolName) {
         log('action.attempted', agentId, { metadata: { tool: typeof tool === 'string' ? tool.slice(0, 64) : null } });
