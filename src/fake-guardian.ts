@@ -157,6 +157,8 @@ export function createFakeGuardian(options: FakeGuardianOptions): Guardian {
     async handleCall(agentId, tool, args) {
       const name = ToolName.safeParse(tool);
       const toolName = name.success ? name.data : null;
+      // One guardian serves one agent. Anyone else is unknown, never governed by this policy.
+      if (agentId !== policy.agentId) return deny(agentId, toolName, 'UNKNOWN_ACTION');
       if (revoked.has(agentId)) return deny(agentId, toolName, 'SESSION_REVOKED');
       if (!toolName) {
         log('action.attempted', agentId, { metadata: { tool: typeof tool === 'string' ? tool.slice(0, 64) : null } });
@@ -219,6 +221,7 @@ export function createFakeGuardian(options: FakeGuardianOptions): Guardian {
     },
 
     async revoke(agentId) {
+      if (agentId !== policy.agentId) return;
       revoked.add(agentId);
       for (const t of transfers.values()) {
         if (t.agentId === agentId && t.state === 'PENDING_APPROVAL') {
@@ -241,7 +244,7 @@ export function createFakeGuardian(options: FakeGuardianOptions): Guardian {
     async updatePolicy(next, expectedVersion): Promise<PolicyUpdateResult> {
       if (expectedVersion !== version) return { ok: false, code: 'VERSION_CONFLICT' };
       const parsed = Policy.safeParse(next);
-      if (!parsed.success) return { ok: false, code: 'INVALID_POLICY' };
+      if (!parsed.success || parsed.data.agentId !== policy.agentId) return { ok: false, code: 'INVALID_POLICY' };
       const oldHash = requestHash(policy);
       policy = parsed.data;
       version += 1;

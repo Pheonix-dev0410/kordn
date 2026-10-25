@@ -32,8 +32,17 @@ export interface ActivityFilter {
   limit?: number;
 }
 
+/**
+ * One instance serves exactly one agent: its policy's agentId, which a policy update can't
+ * change. Calls for any other agent are denied with UNKNOWN_ACTION; revoke and isRevoked
+ * for them are a no-op and false.
+ */
 export interface Guardian {
-  /** Agent identity comes from the caller (stdio process or socket), never from args. */
+  /**
+   * Agent identity comes from the caller (stdio process or socket), never from args.
+   * Never rejects: an internal failure resolves to INTERNAL_UNAVAILABLE, so a broken
+   * guardian denies rather than forwards. The other methods may reject on internal failure.
+   */
   handleCall(agentId: string, tool: unknown, args: unknown): Promise<CallResult>;
 
   listPending(): Promise<PendingApproval[]>;

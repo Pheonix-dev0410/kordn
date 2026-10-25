@@ -99,3 +99,39 @@ describe('fake guardian', () => {
     );
   });
 });
+
+describe('fake guardian: one agent', () => {
+  it('denies calls for any agent but the policy one, and logs them', async () => {
+    const g = createFakeGuardian({ policy });
+    expect(await g.handleCall('other-agent', 'af_get_balance', { resourceId: policy.resourceId })).toEqual({
+      ok: false,
+      error: { code: 'UNKNOWN_ACTION', message: 'UNKNOWN_ACTION' },
+    });
+    expect(await g.handleCall('other-agent', 'af_propose_transfer', transfer(100))).toMatchObject({
+      ok: false,
+      error: { code: 'UNKNOWN_ACTION' },
+    });
+    const denied = await g.listActivity({ events: ['policy.denied'] });
+    expect(denied.map((e) => [e.agent, e.reasonCode])).toEqual([
+      ['other-agent', 'UNKNOWN_ACTION'],
+      ['other-agent', 'UNKNOWN_ACTION'],
+    ]);
+    expect(await g.listActivity({ events: ['read.executed', 'transfer.succeeded'] })).toEqual([]);
+  });
+
+  it('ignores revoke for another agent', async () => {
+    const g = createFakeGuardian({ policy });
+    await g.handleCall(agent, 'af_propose_transfer', transfer(9000));
+    await g.revoke('other-agent');
+    expect(await g.isRevoked('other-agent')).toBe(false);
+    expect(await g.isRevoked(agent)).toBe(false);
+    expect(await g.listPending()).toHaveLength(1);
+    expect(await g.listActivity({ events: ['session.revoked'] })).toEqual([]);
+  });
+
+  it('refuses a policy update that would hand it to another agent', async () => {
+    const g = createFakeGuardian({ policy });
+    expect(await g.updatePolicy({ ...policy, agentId: 'other-agent' }, 1)).toEqual({ ok: false, code: 'INVALID_POLICY' });
+    expect((await g.getPolicy()).policy.agentId).toBe(agent);
+  });
+});
