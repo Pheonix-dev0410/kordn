@@ -1,0 +1,17 @@
+{
+  "name": "@kordn/launcher",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "typecheck": "tsc -p tsconfig.json",
+    "verify": "node -e \"console.error('sandbox:verify not implemented yet (G3.2)'); process.exit(1)\"",
+    "demo": "node -e \"console.error('demo:run not implemented yet (G4.4)'); process.exit(1)\""
+  },
+  "dependencies": {
+    "@kordn/contracts": "workspace:*"
+  }
+}

@@ -1,0 +1,24 @@
+{
+  "schemaVersion": 1,
+  "policyId": "demo-user-policy",
+  "agentId": "sandbox-demo-01",
+  "defaultDecision": "deny",
+  "resourceId": "mock-bank:checking-01",
+  "reads": {
+    "allow": true,
+    "maxCalls": 5,
+    "windowSec": 3600,
+    "maxRowsPerCall": 20,
+    "maxLookbackDays": 30
+  },
+  "transfers": {
+    "allow": true,
+    "maxCalls": 3,
+    "windowSec": 86400,
+    "currency": "USD",
+    "maxSingleMinor": 10000,
+    "maxCumulativeMinor": 25000,
+    "allowedPayeeIds": ["utilities", "landlord"],
+    "humanApprovalAboveMinor": 7500
+  }
+}

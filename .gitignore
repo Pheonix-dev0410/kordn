@@ -1,0 +1,11 @@
+node_modules/
+dist/
+coverage/
+*.log
+*.sqlite
+*.sqlite-wal
+*.sqlite-shm
+.env
+.env.*
+.DS_Store
+~$*.docx

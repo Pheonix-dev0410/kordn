@@ -1,0 +1,14 @@
+# Trust-boundary code needs review from someone other than the author (design doc §12.1).
+*                         @Pheonix-dev0410
+/packages/contracts/      @Pheonix-dev0410 @immortal1405 @rzzdr
+/packages/policy/         @immortal1405 @Pheonix-dev0410
+/packages/db/             @immortal1405 @Pheonix-dev0410
+/packages/guardian/       @immortal1405 @Pheonix-dev0410
+/packages/adapter-mock/   @immortal1405 @Pheonix-dev0410
+/packages/mcp-shim/       @rzzdr @Pheonix-dev0410
+/packages/launcher/       @rzzdr @Pheonix-dev0410
+/apps/admin-ui/           @rzzdr @Pheonix-dev0410
+/apps/agent-runner/       @rzzdr @Pheonix-dev0410
+/tests/adversarial/       @rzzdr @immortal1405
+/tests/concurrency/       @immortal1405 @rzzdr
+/docs/threat-model.md     @Pheonix-dev0410 @immortal1405 @rzzdr
