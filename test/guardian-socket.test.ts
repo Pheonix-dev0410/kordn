@@ -253,3 +253,45 @@ describe('guardian socket failures', () => {
     ]);
   });
 });
+
+describe('guardian socket options', () => {
+  it('defaults to 32 connections', async () => {
+    await start();
+    expect(servers[0]!.maxConnections).toBe(32);
+  });
+
+  it.each([
+    ['maxInFlight', 0],
+    ['maxInFlight', Number.NaN],
+    ['maxInFlight', 1.5],
+    ['maxConnections', 0],
+    ['maxConnections', Infinity],
+    ['idleTimeoutMs', 0],
+    ['idleTimeoutMs', -1],
+    // Node turns a timer this long into 1 ms.
+    ['idleTimeoutMs', 2 ** 31],
+  ])('rejects %s: %s', (name, value) => {
+    expect(() => serveGuardianSocket(createFakeGuardian({ policy }), policy.agentId, '/nonexistent/g.sock', { [name]: value })).toThrow(
+      RangeError,
+    );
+  });
+
+  it('parses no frame past maxInFlight until a queued call finishes', async () => {
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => (release = resolve));
+    const { guardian } = stubGuardian(async () => {
+      await gate;
+      return {};
+    });
+    const { path } = await startWith(guardian, { maxInFlight: 4 });
+    // Four frames fill the queue. The fifth is malformed: parsing it would close the connection.
+    const text = [0, 1, 2, 3].map((i) => balance(String(i))).join('') + 'not json\n';
+    let settled = false;
+    const done = exchange(path, text, 5).finally(() => (settled = true));
+    await tick(50);
+    expect(settled).toBe(false);
+    release();
+    // The first answer frees a slot, the bad frame is parsed, and the rest never run.
+    expect(await done).toMatchObject({ lines: [{ id: '0' }], closed: true });
+  });
+});

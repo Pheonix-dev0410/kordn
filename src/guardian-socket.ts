@@ -13,23 +13,27 @@ import { MAX_FRAME_BYTES, type SocketResponse, SocketRequest } from './schema.js
 export interface GuardianSocketOptions {
   /** Concurrent connections. Further ones are closed on arrival. */
   maxConnections?: number;
-  /** Requests queued on one connection before it stops reading until they drain. */
+  /** Requests queued on one connection. At the cap it stops parsing and reading until one finishes. */
   maxInFlight?: number;
   /** A connection with no traffic either way for this long is closed. */
   idleTimeoutMs?: number;
 }
 
 const DEFAULTS: Required<GuardianSocketOptions> = {
-  maxConnections: 8,
+  maxConnections: 32,
   maxInFlight: 32,
   idleTimeoutMs: 10 * 60_000,
 };
+
+// Node clamps a longer timer to 1 ms, which would close every connection at once.
+const MAX_TIMER_MS = 2 ** 31 - 1;
 
 const INTERNAL_UNAVAILABLE: CallResult = {
   ok: false,
   error: { code: 'INTERNAL_UNAVAILABLE', message: 'INTERNAL_UNAVAILABLE' },
 };
 
+/** Throws RangeError for a limit that isn't a positive integer: 0 or NaN would wedge or unbound a connection. */
 export function serveGuardianSocket(
   guardian: Guardian,
   agentId: string,
@@ -37,6 +41,10 @@ export function serveGuardianSocket(
   options: GuardianSocketOptions = {},
 ): Promise<Server> {
   const limits = { ...DEFAULTS, ...options };
+  for (const [name, value] of Object.entries(limits)) {
+    const max = name === 'idleTimeoutMs' ? MAX_TIMER_MS : Number.MAX_SAFE_INTEGER;
+    if (!Number.isInteger(value) || value < 1 || value > max) throw new RangeError(`invalid ${name}: ${value}`);
+  }
   const server = createServer((socket) => handleConnection(guardian, agentId, socket, limits));
   server.maxConnections = limits.maxConnections;
   return new Promise((resolve, reject) => {
@@ -54,6 +62,8 @@ function handleConnection(guardian: Guardian, agentId: string, socket: Socket, l
   // only once the whole line is in. 0x0a never occurs inside a multibyte character.
   let partial: Buffer | undefined;
   let partialBytes = 0;
+  // Read but not yet parsed because the queue was full. At most one chunk: reading is paused.
+  let backlog: Buffer | undefined;
   // Responses go out in request order even though handleCall is async.
   let queue = Promise.resolve();
   let inFlight = 0;
@@ -61,12 +71,30 @@ function handleConnection(guardian: Guardian, agentId: string, socket: Socket, l
   socket.setTimeout(limits.idleTimeoutMs, () => socket.destroy());
 
   socket.on('data', (chunk: Buffer) => {
-    let start = 0;
-    let newline: number;
-    while ((newline = chunk.indexOf(0x0a, start)) !== -1) {
-      const piece = chunk.subarray(start, newline);
-      start = newline + 1;
-      if (partialBytes + piece.length > MAX_FRAME_BYTES) return socket.destroy();
+    backlog = backlog ? Buffer.concat([backlog, chunk]) : chunk;
+    parse();
+  });
+  socket.on('error', () => socket.destroy());
+
+  /** Parses frames from the backlog until it is empty or the queue is full. */
+  function parse(): void {
+    while (backlog && !socket.destroyed) {
+      if (inFlight >= limits.maxInFlight) {
+        socket.pause();
+        return;
+      }
+      const newline = backlog.indexOf(0x0a);
+      if (newline === -1) {
+        if (partialBytes + backlog.length > MAX_FRAME_BYTES) return void socket.destroy();
+        partial ??= Buffer.allocUnsafe(MAX_FRAME_BYTES);
+        backlog.copy(partial, partialBytes);
+        partialBytes += backlog.length;
+        backlog = undefined;
+        break;
+      }
+      const piece = backlog.subarray(0, newline);
+      backlog = newline + 1 < backlog.length ? backlog.subarray(newline + 1) : undefined;
+      if (partialBytes + piece.length > MAX_FRAME_BYTES) return void socket.destroy();
       let line: string;
       if (partial && partialBytes > 0) {
         piece.copy(partial, partialBytes);
@@ -76,28 +104,20 @@ function handleConnection(guardian: Guardian, agentId: string, socket: Socket, l
         line = piece.toString('utf8');
       }
       const request = parseFrame(line);
-      if (!request) return socket.destroy();
+      if (!request) return void socket.destroy();
       enqueue(request);
     }
-    const rest = chunk.subarray(start);
-    if (rest.length === 0) return;
-    if (partialBytes + rest.length > MAX_FRAME_BYTES) return socket.destroy();
-    partial ??= Buffer.allocUnsafe(MAX_FRAME_BYTES);
-    rest.copy(partial, partialBytes);
-    partialBytes += rest.length;
-  });
-  socket.on('error', () => socket.destroy());
+    if (!socket.destroyed) socket.resume();
+  }
 
   function enqueue(request: z.infer<typeof SocketRequest>): void {
     inFlight += 1;
-    // Frames already read in this chunk still queue past the cap; nothing more is read.
-    if (inFlight >= limits.maxInFlight) socket.pause();
     queue = queue.then(async () => {
       // A request queued before the connection died (e.g. ahead of a bad frame in the same
       // chunk) must not run: nobody would see its result.
       if (!socket.destroyed) await answer(request);
       inFlight -= 1;
-      if (inFlight < limits.maxInFlight && !socket.destroyed) socket.resume();
+      parse();
     });
   }
 
