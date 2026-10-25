@@ -65,7 +65,6 @@ export function createFakeGuardian(options: FakeGuardianOptions): Guardian {
   // Design doc §8.4: an idempotency key is scoped to (agent, key). Only reserved transfers are
   // recorded, so a denied request can be retried once the policy allows it.
   const byIdempotencyKey = new Map<string, Transfer>();
-  const usedNonces = new Set<string>();
   const activity: AuditEvent[] = [];
 
   const iso = () => new Date(now()).toISOString();
@@ -101,6 +100,16 @@ export function createFakeGuardian(options: FakeGuardianOptions): Guardian {
     }
   }
 
+  /** The hard rules, against the current policy. Proposal and approval both use it. */
+  function checkTransfer(call: TransferCall): DenyCode | null {
+    const rules = policy.transfers;
+    if (call.resourceId !== policy.resourceId) return 'UNKNOWN_ACTION';
+    if (!rules.allow) return 'CAPABILITY_DISABLED';
+    if (!rules.allowedPayeeIds.includes(call.payeeId)) return 'UNAPPROVED_PAYEE';
+    if (call.amountMinor > rules.maxSingleMinor) return 'SINGLE_LIMIT';
+    return null;
+  }
+
   /** What af_propose_transfer reports for a transfer, now. */
   function proposeResult(t: Transfer): CallResult {
     expire(t);
@@ -119,10 +128,8 @@ export function createFakeGuardian(options: FakeGuardianOptions): Guardian {
     }
 
     const rules = policy.transfers;
-    if (call.resourceId !== policy.resourceId) return deny(agentId, call.tool, 'UNKNOWN_ACTION', hash);
-    if (!rules.allow) return deny(agentId, call.tool, 'CAPABILITY_DISABLED', hash);
-    if (!rules.allowedPayeeIds.includes(call.payeeId)) return deny(agentId, call.tool, 'UNAPPROVED_PAYEE', hash);
-    if (call.amountMinor > rules.maxSingleMinor) return deny(agentId, call.tool, 'SINGLE_LIMIT', hash);
+    const code = checkTransfer(call);
+    if (code) return deny(agentId, call.tool, code, hash);
 
     const ref = `tr_${token(16)}`;
     const t: Transfer = { ref, agentId, call, hash, state: 'RESERVED', reasonCode: null, updatedAt: iso() };
@@ -157,9 +164,9 @@ export function createFakeGuardian(options: FakeGuardianOptions): Guardian {
     const t = transfers.get(reservationId);
     if (t) expire(t);
     if (!t?.pending || t.state !== 'PENDING_APPROVAL') return { ok: false, code: t?.state === 'EXPIRED' ? 'APPROVAL_EXPIRED' : 'NOT_PENDING' };
-    if (nonce !== t.pending.nonce || usedNonces.has(nonce)) return { ok: false, code: 'BAD_NONCE' };
+    // The nonce is one-use because a settled transfer is no longer PENDING_APPROVAL.
+    if (nonce !== t.pending.nonce) return { ok: false, code: 'BAD_NONCE' };
     if (digest !== null && digest !== t.pending.digest) return { ok: false, code: 'STALE_DIGEST' };
-    usedNonces.add(nonce);
     if (digest === null) {
       t.state = 'REJECTED';
       t.updatedAt = iso();
@@ -167,13 +174,7 @@ export function createFakeGuardian(options: FakeGuardianOptions): Guardian {
       return { ok: true };
     }
     // Approval can't override a hard deny: re-check against the current policy.
-    const code: DenyCode | null = revoked.has(t.agentId)
-      ? 'SESSION_REVOKED'
-      : !policy.transfers.allowedPayeeIds.includes(t.call.payeeId)
-        ? 'UNAPPROVED_PAYEE'
-        : t.call.amountMinor > policy.transfers.maxSingleMinor
-          ? 'SINGLE_LIMIT'
-          : null;
+    const code = revoked.has(t.agentId) ? 'SESSION_REVOKED' : checkTransfer(t.call);
     if (code) {
       t.state = 'REJECTED';
       t.reasonCode = code;

@@ -72,11 +72,63 @@ describe('fake guardian', () => {
     await g.revoke(agent);
     expect(await g.isRevoked(agent)).toBe(true);
     expect(await g.listPending()).toEqual([]);
-    expect(await g.approve(p!.reservationId, p!.digest, p!.nonce)).toMatchObject({ ok: false });
+    expect(await g.approve(p!.reservationId, p!.digest, p!.nonce)).toEqual({ ok: false, code: 'NOT_PENDING' });
+    expect(await g.handleCall(agent, 'af_get_transfer_status', { transferRef: p!.reservationId })).toMatchObject({
+      ok: false,
+      error: { code: 'SESSION_REVOKED' },
+    });
+    // Issue #6: after revoke, an otherwise-allowed transfer gets SESSION_REVOKED.
+    expect(await g.handleCall(agent, 'af_propose_transfer', transfer(100))).toMatchObject({
+      ok: false,
+      error: { code: 'SESSION_REVOKED' },
+    });
     expect(await g.handleCall(agent, 'af_get_balance', { resourceId: policy.resourceId })).toMatchObject({
       ok: false,
       error: { code: 'SESSION_REVOKED' },
     });
+  });
+
+  it('rejects once, with the right nonce', async () => {
+    const g = createFakeGuardian({ policy });
+    const r = await g.handleCall(agent, 'af_propose_transfer', transfer(9000));
+    const [p] = await g.listPending();
+    expect(await g.reject(p!.reservationId, 'wrong')).toEqual({ ok: false, code: 'BAD_NONCE' });
+    expect(await g.reject(p!.reservationId, p!.nonce)).toEqual({ ok: true });
+    expect(await g.reject(p!.reservationId, p!.nonce)).toEqual({ ok: false, code: 'NOT_PENDING' });
+    expect(await g.approve(p!.reservationId, p!.digest, p!.nonce)).toEqual({ ok: false, code: 'NOT_PENDING' });
+    expect(await g.listPending()).toEqual([]);
+    const ref = (r as { ok: true; result: { transferRef: string } }).result.transferRef;
+    expect(await g.handleCall(agent, 'af_get_transfer_status', { transferRef: ref })).toMatchObject({
+      ok: true,
+      result: { state: 'REJECTED', reasonCode: null },
+    });
+    expect(await g.listActivity({ events: ['approval.rejected', 'transfer.succeeded'] })).toMatchObject([
+      { event: 'approval.rejected', reservationId: ref },
+    ]);
+  });
+
+  it('rejects an unknown reservation as NOT_PENDING', async () => {
+    const g = createFakeGuardian({ policy });
+    expect(await g.reject('tr_nope', 'x')).toEqual({ ok: false, code: 'NOT_PENDING' });
+    expect(await g.approve('tr_nope', 'sha256:' + '0'.repeat(64), 'x')).toEqual({ ok: false, code: 'NOT_PENDING' });
+  });
+
+  it.each([
+    ['transfers are disabled', { transfers: { ...policy.transfers, allow: false } }, 'CAPABILITY_DISABLED'],
+    ['the payee was removed', { transfers: { ...policy.transfers, allowedPayeeIds: ['landlord'] } }, 'UNAPPROVED_PAYEE'],
+    ['the resource changed', { resourceId: 'mock-bank:savings-01' }, 'UNKNOWN_ACTION'],
+  ])('approval cannot override a hard deny: %s', async (_, change, code) => {
+    const g = createFakeGuardian({ policy });
+    const r = await g.handleCall(agent, 'af_propose_transfer', transfer(9000));
+    const [p] = await g.listPending();
+    expect(await g.updatePolicy({ ...policy, ...change }, 1)).toMatchObject({ ok: true });
+    expect(await g.approve(p!.reservationId, p!.digest, p!.nonce)).toEqual({ ok: false, code });
+    const ref = (r as { ok: true; result: { transferRef: string } }).result.transferRef;
+    expect(await g.handleCall(agent, 'af_get_transfer_status', { transferRef: ref })).toMatchObject({
+      ok: true,
+      result: { state: 'REJECTED', reasonCode: code },
+    });
+    expect(await g.listActivity({ events: ['transfer.succeeded'] })).toEqual([]);
   });
 
   it('versions policy updates and rejects invalid ones', async () => {
