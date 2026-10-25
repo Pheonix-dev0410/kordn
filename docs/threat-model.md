@@ -42,4 +42,4 @@ Out of scope: root on the host, kernel escapes, a modified kordn binary.
 
 ## Not logged
 
-- A message that isn't valid JSON-RPC/MCP (for example `params` that is a string, null or an array) is rejected by the MCP transport before kordn sees it: stdio drops it, HTTP answers 400. It isn't logged. Every well-formed `tools/call` is logged, including unknown tools and bad arguments.
+- A message that isn't valid JSON-RPC/MCP (for example `params` that is a string, null or an array) is rejected or ignored by the MCP transport before kordn sees it. So is a `tools/call` sent as a notification (no `id`): over HTTP it gets 202 and is dropped. None of these are logged. Every `tools/call` request with an `id` and object `params` is logged, including unknown tools and bad arguments.
