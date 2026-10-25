@@ -7,7 +7,7 @@ import policyJson from '../examples/policy.json' with { type: 'json' };
 import { createFakeGuardian } from '../src/fake-guardian.js';
 import type { Guardian } from '../src/guardian-api.js';
 import { serveGuardianSocket } from '../src/guardian-socket.js';
-import { MAX_FRAME_BYTES, Policy } from '../src/schema.js';
+import { AuditEvent, MAX_FRAME_BYTES, Policy } from '../src/schema.js';
 
 const policy = Policy.parse(policyJson);
 const servers: Server[] = [];
@@ -293,5 +293,68 @@ describe('guardian socket options', () => {
     release();
     // The first answer frees a slot, the bad frame is parsed, and the rest never run.
     expect(await done).toMatchObject({ lines: [{ id: '0' }], closed: true });
+  });
+});
+
+describe('guardian socket refused connections', () => {
+  /** Opens `n` raw connections and waits until each is connected or dropped. */
+  async function open(path: string, n: number) {
+    await Promise.all(
+      Array.from({ length: n }, () => {
+        const sock = client(path);
+        return new Promise((resolve) => {
+          sock.on('connect', resolve);
+          sock.on('close', resolve);
+        });
+      }),
+    );
+    await tick(50);
+  }
+
+  it('reports refusals to the guardian at most once a second, with the count', async () => {
+    const reports: (number | undefined)[] = [];
+    const guardian: Guardian = {
+      ...createFakeGuardian({ policy }),
+      recordRefusedConnection: async (refused) => {
+        reports.push(refused);
+      },
+    };
+    const { path } = await startWith(guardian, {});
+    await open(path, 40);
+    expect(reports).toEqual([1]);
+    await tick(1100);
+    expect(reports).toEqual([1, 7]);
+    await open(path, 1);
+    expect(reports).toEqual([1, 7]);
+    await tick(1100);
+    expect(reports).toEqual([1, 7, 1]);
+  });
+
+  it('logs a refusal through the fake as one valid audit event', async () => {
+    const guardian = createFakeGuardian({ policy });
+    const { path } = await startWith(guardian, { maxConnections: 1 });
+    await open(path, 2);
+    const events = await guardian.listActivity();
+    expect(events).toMatchObject([
+      { event: 'action.attempted', agent: policy.agentId, metadata: { reason: 'connection_limit', refused: 1 } },
+    ]);
+    expect(AuditEvent.safeParse(events[0]).success).toBe(true);
+  });
+
+  it.each([
+    ['throws', () => {
+      throw new Error('boom');
+    }],
+    ['rejects', () => Promise.reject(new Error('boom'))],
+  ])('keeps serving when recordRefusedConnection %s', async (_, record) => {
+    const recordRefusedConnection = record as Guardian['recordRefusedConnection'];
+    const guardian: Guardian = { ...createFakeGuardian({ policy }), recordRefusedConnection };
+    const { path } = await startWith(guardian, { maxConnections: 1 });
+    const first = client(path);
+    await new Promise((resolve) => first.on('connect', resolve));
+    await open(path, 1);
+    first.destroy();
+    await tick(10);
+    expect((await exchange(path, balance('ok'), 1)).lines).toMatchObject([{ id: 'ok', ok: true }]);
   });
 });

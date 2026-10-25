@@ -418,3 +418,25 @@ describe('fake guardian: never rejects', () => {
     });
   });
 });
+
+describe('fake guardian: refused connections', () => {
+  const refusal = { event: 'action.attempted', agent, tool: null, requestHash: null, reasonCode: null };
+
+  it('logs one valid audit event per report, with the count', async () => {
+    const g = createFakeGuardian({ policy });
+    await g.recordRefusedConnection();
+    await g.recordRefusedConnection(7);
+    const events = await g.listActivity();
+    expect(events.every((e) => AuditEvent.safeParse(e).success)).toBe(true);
+    expect(events).toMatchObject([
+      { ...refusal, metadata: { reason: 'connection_limit', refused: 7 } },
+      { ...refusal, metadata: { reason: 'connection_limit', refused: 1 } },
+    ]);
+  });
+
+  it.each([0, -3, 1.5, Number.NaN])('counts a nonsense refused count of %s as 1', async (n) => {
+    const g = createFakeGuardian({ policy });
+    await expect(g.recordRefusedConnection(n)).resolves.toBeUndefined();
+    expect((await g.listActivity())[0]!.metadata).toEqual({ reason: 'connection_limit', refused: 1 });
+  });
+});

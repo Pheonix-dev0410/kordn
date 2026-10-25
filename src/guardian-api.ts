@@ -61,4 +61,10 @@ export interface Guardian {
 
   /** Newest first. */
   listActivity(filter?: ActivityFilter): Promise<AuditEvent[]>;
+
+  /**
+   * A trusted component (the socket server) reports `refused` connections (default 1) turned
+   * away for exceeding its connection limit. Logs one audit event. Never rejects.
+   */
+  recordRefusedConnection(refused?: number): Promise<void>;
 }

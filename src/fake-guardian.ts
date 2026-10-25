@@ -304,6 +304,11 @@ export function createFakeGuardian(options: FakeGuardianOptions): Guardian {
       return revoked.has(agentId);
     },
 
+    async recordRefusedConnection(refused = 1) {
+      const count = Number.isInteger(refused) && refused > 0 ? refused : 1;
+      log('action.attempted', policy.agentId, { metadata: { reason: 'connection_limit', refused: count } });
+    },
+
     async getPolicy() {
       return { policy: structuredClone(policy), version };
     },

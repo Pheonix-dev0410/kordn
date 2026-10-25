@@ -28,6 +28,8 @@ const DEFAULTS: Required<GuardianSocketOptions> = {
 // Node clamps a longer timer to 1 ms, which would close every connection at once.
 const MAX_TIMER_MS = 2 ** 31 - 1;
 
+const REFUSAL_REPORT_INTERVAL_MS = 1000;
+
 const INTERNAL_UNAVAILABLE: CallResult = {
   ok: false,
   error: { code: 'INTERNAL_UNAVAILABLE', message: 'INTERNAL_UNAVAILABLE' },
@@ -47,6 +49,7 @@ export function serveGuardianSocket(
   }
   const server = createServer((socket) => handleConnection(guardian, agentId, socket, limits));
   server.maxConnections = limits.maxConnections;
+  reportRefusals(server, guardian);
   return new Promise((resolve, reject) => {
     server.once('error', reject);
     server.listen(socketPath, () => {
@@ -54,6 +57,32 @@ export function serveGuardianSocket(
       resolve(server);
     });
   });
+}
+
+/**
+ * Node closes connections beyond maxConnections itself and emits 'drop'. Each refusal reaches
+ * the guardian's audit log, but at most once a second, so a connect flood can't flood the log:
+ * the first refusal is reported at once, the rest of the window as one count when it ends.
+ */
+function reportRefusals(server: Server, guardian: Guardian): void {
+  let refused = 0;
+  let window: NodeJS.Timeout | undefined;
+  const flush = () => {
+    window = undefined;
+    if (refused === 0) return;
+    const count = refused;
+    refused = 0;
+    // The guardian promises not to reject; a broken one still mustn't take the server down.
+    Promise.resolve()
+      .then(() => guardian.recordRefusedConnection(count))
+      .catch(() => {});
+    window = setTimeout(flush, REFUSAL_REPORT_INTERVAL_MS).unref();
+  };
+  server.on('drop', () => {
+    refused += 1;
+    if (!window) flush();
+  });
+  server.on('close', () => clearTimeout(window));
 }
 
 function handleConnection(guardian: Guardian, agentId: string, socket: Socket, limits: Required<GuardianSocketOptions>): void {
