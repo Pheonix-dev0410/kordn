@@ -120,6 +120,21 @@ describe('HTTP transport', () => {
     expect(written).toBeLessThan(32 * 1024 * 1024);
   });
 
+  it('keeps serving after a client disconnects mid-body', async () => {
+    const { url } = await start();
+    await new Promise<void>((resolve) => {
+      const req = request(url, {
+        method: 'POST',
+        headers: { ...accept, authorization: `Bearer ${TOKEN}`, 'content-type': 'application/json', 'content-length': '1000' },
+      });
+      req.on('error', () => resolve());
+      req.write('{"jsonrpc":', () => setTimeout(() => req.destroy(), 20));
+      req.on('close', () => resolve());
+    });
+    const res = await raw(url, { ...accept, authorization: `Bearer ${TOKEN}` }, listTools);
+    expect(res.status).toBe(200);
+  });
+
   it('answers 404 off /mcp, even with the token', async () => {
     const { url } = await start();
     const res = await raw(url.replace('/mcp', '/admin'), { ...accept, authorization: `Bearer ${TOKEN}` }, listTools);

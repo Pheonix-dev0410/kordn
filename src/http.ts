@@ -130,7 +130,11 @@ function readBody(req: IncomingMessage): Promise<Uint8Array<ArrayBuffer> | null>
       resolve(null);
     };
     const onEnd = () => resolve(new Uint8Array(Buffer.concat(chunks)));
-    req.on('data', onData).once('end', onEnd).once('error', reject);
+    // A client that disconnects mid-body never sends 'end'; don't leave the request hanging.
+    const onClose = () => {
+      if (!req.complete) reject(new Error('request aborted'));
+    };
+    req.on('data', onData).once('end', onEnd).once('error', reject).once('close', onClose);
   });
 }
 
