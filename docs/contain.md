@@ -188,7 +188,9 @@ security options, mounts, devices (and device cgroup rules and requests), tmpfs 
 variables, capabilities, namespaces, the OCI runtime and its daemon definition, OCI annotations
 and sysctls. Resource knobs outside pids, memory, swap and CPU are not checked: `--ulimit`,
 `--oom-score-adj`, `--oom-kill-disable` and similar can make the sandbox easier to
-exhaust, but not easier to leave.
+exhaust, but not easier to leave. Also not checked:
+`--group-add` (only group 0 is caught, by `nonRoot`) and `--cgroup-parent` (the cgroup limits
+are still verified from inside by `resourceLimits`).
 
 | Check | Configuration | Runtime (inside the container) |
 |---|---|---|
