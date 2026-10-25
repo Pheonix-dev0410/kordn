@@ -52,6 +52,11 @@ describe('admin server binding', () => {
     await expect(startAdminServer({ guardian, agentId: '<x>', mode: 'guard' })).rejects.toThrow(/agent/);
   });
 
+  it('refuses port 80, where browsers drop the port from Host and Origin', async () => {
+    const guardian = createFakeGuardian({ policy });
+    await expect(startAdminServer({ guardian, agentId: agent, mode: 'guard', port: 80 })).rejects.toThrow(/port 80/);
+  });
+
   it('listens on 127.0.0.1 with a fresh token of at least 128 bits', async () => {
     const { server: a } = await started();
     const { server: b } = await started();
@@ -142,17 +147,32 @@ describe('admin login and sessions', () => {
     }
   });
 
-  it('rate-limits failed logins, then recovers after the window', async () => {
+  it('throttles wrong guesses but always accepts the right token', async () => {
     let now = 1_000_000;
     const { server } = await started({ nowMs: () => now });
     const attempt = (token: string) =>
       send(server, 'POST', '/login', { form: { token }, headers: { origin: originOf(server) } });
     for (let i = 0; i < 5; i++) expect((await attempt('wrong')).status).toBe(401);
     expect((await attempt('wrong')).status).toBe(429);
-    // Locked out: even the right token is refused until the window passes.
-    expect((await attempt(server.token)).status).toBe(429);
-    now += 61_000;
+    // A local process spamming wrong tokens must not lock the user out of Stop.
     expect((await attempt(server.token)).status).toBe(303);
+    expect((await attempt('wrong')).status).toBe(429);
+    now += 61_000;
+    expect((await attempt('wrong')).status).toBe(401);
+  });
+
+  it('ends the old session when logging in again', async () => {
+    const { server } = await started();
+    const old = await login(server);
+    const res = await send(server, 'POST', '/login', {
+      form: { token: server.token },
+      headers: { origin: originOf(server), cookie: old.cookie },
+    });
+    expect(res.status).toBe(303);
+    const cookie = [res.headers['set-cookie']].flat()[0]!.split(';')[0]!;
+    expect(cookie).not.toBe(old.cookie);
+    expect((await old.get('/policy')).status).toBe(303);
+    expect((await send(server, 'GET', '/policy', { headers: { cookie } })).status).toBe(200);
   });
 
   it('expires sessions', async () => {

@@ -58,6 +58,8 @@ export async function startAdminServer(options: AdminServerOptions): Promise<Adm
   if (host !== LOOPBACK) throw new Error(`admin UI binds only to ${LOOPBACK}, refusing ${JSON.stringify(host)}`);
   if (options.mode !== 'guard' && options.mode !== 'contain') throw new Error('admin UI mode must be guard or contain');
   if (!AgentId.safeParse(options.agentId).success) throw new Error('admin UI needs a valid agent id');
+  // Browsers omit ":80" from Host and Origin, which would fail the exact-match checks.
+  if (options.port === 80) throw new Error('admin UI cannot use port 80; pick another port or 0');
 
   const { guardian, agentId, mode } = options;
   const now = options.nowMs ?? (() => Date.now());
@@ -91,12 +93,16 @@ export async function startAdminServer(options: AdminServerOptions): Promise<Adm
     '/login': {
       GET: async (r) => (r.session ? redirect(r.res, '/') : sendHtml(r.res, 200, loginPage(pageContext(null)))),
       POST: async (r) => {
-        // Checked before the token so a locked-out guesser learns nothing, even when right.
-        if (loginFailures.full()) throw new HttpError(429, 'Too many failed logins. Wait a minute.');
+        // The right token always works, so a local process spamming wrong guesses can't lock
+        // the user out of Stop. Only wrong guesses are throttled; the token is 256 bits, so
+        // the throttle is belt and braces, not what makes guessing infeasible.
         if (!sameSecret(r.form.one('token'), token)) {
+          if (loginFailures.full()) throw new HttpError(429, 'Too many failed logins. Wait a minute.');
           loginFailures.add();
           return sendHtml(r.res, 401, loginPage(pageContext(null, ['Wrong token.'])));
         }
+        // Logging in again replaces the current session rather than leaving it valid.
+        if (r.session) sessions.delete(r.session.id);
         const session = sessions.create();
         r.res.setHeader(
           'set-cookie',
