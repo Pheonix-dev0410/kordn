@@ -14,7 +14,7 @@ import {
 // token. Host and Origin are checked first (MCP's DNS-rebinding guidance), so a page in
 // the user's browser can't reach the server through a rebound name.
 
-export const MIN_TOKEN_LENGTH = 16;
+export const MIN_TOKEN_LENGTH = 32;
 const MAX_BODY_BYTES = 1024 * 1024;
 const PATH = '/mcp';
 

@@ -8,7 +8,7 @@ import { createMcpServer } from '../src/mcp-server.js';
 import { Policy } from '../src/schema.js';
 
 const policy = Policy.parse(policyJson);
-const TOKEN = 'test-token-0123456789abcdef';
+const TOKEN = 'test-token-0123456789abcdef0123456789';
 const closers: (() => Promise<void>)[] = [];
 
 afterEach(async () => {
@@ -47,7 +47,7 @@ describe('HTTP transport', () => {
   it('refuses to start without a token, or with a short one', async () => {
     const factory = () => createMcpServer({ agentId: policy.agentId, handleCall: async () => ({ ok: true, result: {} }) });
     await expect(serveHttp({ factory, token: '', port: 0 })).rejects.toThrow(/KORDN_TOKEN/);
-    await expect(serveHttp({ factory, token: 'short', port: 0 })).rejects.toThrow(/KORDN_TOKEN/);
+    await expect(serveHttp({ factory, token: 'x'.repeat(31), port: 0 })).rejects.toThrow(/KORDN_TOKEN .*32 characters/);
   });
 
   it('binds 127.0.0.1 and serves /mcp', async () => {

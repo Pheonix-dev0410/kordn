@@ -105,14 +105,17 @@ describe('kordn CLI', () => {
     expect(stderr).toMatch(/usage: kordn/);
   });
 
-  it('refuses --http without KORDN_TOKEN', async () => {
-    const { code, stderr } = await run(['--http', '--port', '0']);
-    expect(code).not.toBe(0);
-    expect(stderr).toMatch(/KORDN_TOKEN/);
+  it.each([
+    ['without KORDN_TOKEN', {}],
+    ['with a 31-character KORDN_TOKEN', { KORDN_TOKEN: 'x'.repeat(31) }],
+  ])('refuses --http %s', async (_name, env) => {
+    const { code, stderr } = await run(['--http', '--port', '0'], env);
+    expect(code).toBe(1);
+    expect(stderr).toMatch(/KORDN_TOKEN must be set to a random secret of at least 32 characters/);
   });
 
   it('serves --http with the token', async () => {
-    const token = 'cli-token-0123456789abcdef';
+    const token = 'cli-token-0123456789abcdef0123456789';
     const child = spawn(process.execPath, [cli, '--http', '--port', '0'], {
       env: { PATH: process.env.PATH ?? '', KORDN_TOKEN: token },
       stdio: ['ignore', 'pipe', 'pipe'],
