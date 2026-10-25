@@ -1,3 +1,5 @@
+import { execFile } from 'node:child_process';
+
 // Contain mode: how the untrusted agent container is run. Design doc §9.1-9.2.
 // The guardian socket is the only thing the container gets from the host.
 
@@ -62,4 +64,42 @@ export function sandboxUser({ rootless, uid, gid }: { rootless: boolean; uid: nu
 
 export function socketFileMode(rootless: boolean): number {
   return rootless ? 0o666 : 0o600;
+}
+
+const unixPath = (endpoint: string | undefined) => (endpoint?.startsWith('unix://') ? endpoint.slice('unix://'.length) : undefined);
+
+/**
+ * Host paths where a Docker daemon socket may live: the rootful defaults, the socket named
+ * by DOCKER_HOST or the current docker context, and the rootless default. None of them may
+ * be visible inside the sandbox.
+ */
+export function dockerSocketPaths(o: { dockerHost?: string; contextHost?: string; xdgRuntimeDir?: string }): string[] {
+  const paths = [
+    '/var/run/docker.sock',
+    '/run/docker.sock',
+    unixPath(o.dockerHost),
+    o.xdgRuntimeDir ? `${o.xdgRuntimeDir}/docker.sock` : undefined,
+    unixPath(o.contextHost),
+  ];
+  return [...new Set(paths.filter((p): p is string => p !== undefined && p.startsWith('/')))];
+}
+
+/** The unix socket of the daemon `docker` talks to, from DOCKER_HOST or the current context. */
+export function daemonSocketPath(docker = 'docker'): Promise<string | undefined> {
+  const fromEnv = unixPath(process.env.DOCKER_HOST);
+  if (fromEnv) return Promise.resolve(fromEnv);
+  return new Promise((resolve) =>
+    execFile(docker, ['context', 'inspect', '--format', '{{.Endpoints.docker.Host}}'], { encoding: 'utf8' }, (err, stdout) =>
+      resolve(err ? undefined : unixPath(stdout.trim())),
+    ),
+  );
+}
+
+/** dockerSocketPaths for this host and environment. */
+export async function hostDockerSocketPaths(docker = 'docker'): Promise<string[]> {
+  return dockerSocketPaths({
+    dockerHost: process.env.DOCKER_HOST,
+    contextHost: await daemonSocketPath(docker),
+    xdgRuntimeDir: process.env.XDG_RUNTIME_DIR,
+  });
 }

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { hardenedRunFlags, SANDBOX_SOCKET, sandboxUser, socketFileMode } from '../src/sandbox.js';
+import { dockerSocketPaths, hardenedRunFlags, SANDBOX_SOCKET, sandboxUser, socketFileMode } from '../src/sandbox.js';
 
 describe('hardened run flags', () => {
   const flags = hardenedRunFlags({ socketPath: '/tmp/kordn-abc/guardian.sock', user: '1000:100' });
@@ -59,5 +59,28 @@ describe('sandbox user and socket mode', () => {
   it('rootless: host uid is container root, so use the image user and open the socket inside the private dir', () => {
     expect(sandboxUser({ rootless: true, uid: 1000, gid: 100 })).toBe('65532:65532');
     expect(socketFileMode(true)).toBe(0o666);
+  });
+});
+
+describe('dockerSocketPaths', () => {
+  it('includes the rootful defaults', () => {
+    expect(dockerSocketPaths({})).toEqual(['/var/run/docker.sock', '/run/docker.sock']);
+  });
+
+  it('adds the socket named by DOCKER_HOST, the docker context and the rootless default', () => {
+    expect(
+      dockerSocketPaths({
+        dockerHost: 'unix:///run/user/1000/docker.sock',
+        contextHost: 'unix:///home/alice/.docker/run/docker.sock',
+        xdgRuntimeDir: '/run/user/1000',
+      }),
+    ).toEqual(['/var/run/docker.sock', '/run/docker.sock', '/run/user/1000/docker.sock', '/home/alice/.docker/run/docker.sock']);
+  });
+
+  it('ignores non-unix endpoints', () => {
+    expect(dockerSocketPaths({ dockerHost: 'tcp://127.0.0.1:2375', contextHost: 'ssh://me@host' })).toEqual([
+      '/var/run/docker.sock',
+      '/run/docker.sock',
+    ]);
   });
 });

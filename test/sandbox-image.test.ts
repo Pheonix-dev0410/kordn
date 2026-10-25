@@ -7,7 +7,7 @@ import policyJson from '../examples/policy.json' with { type: 'json' };
 import { createFakeGuardian } from '../src/fake-guardian.js';
 import { serveGuardianSocket } from '../src/guardian-socket.js';
 import { scanImage } from '../src/image-scan.js';
-import { hardenedRunFlags, SANDBOX_SOCKET, socketFileMode } from '../src/sandbox.js';
+import { daemonSocketPath, hardenedRunFlags, hostDockerSocketPaths, SANDBOX_SOCKET, socketFileMode } from '../src/sandbox.js';
 import { type ProbeResult, parseProbeOutput, probeScript } from '../src/sandbox-probe.js';
 import { Policy } from '../src/schema.js';
 import { buildSandboxImage, DOCKER_TESTS, docker, dockerOk, hostUser, leftovers, removeImages, ROOT, testName } from './docker.js';
@@ -65,7 +65,7 @@ describe.skipIf(!DOCKER_TESTS)('sandbox image (Docker)', () => {
       socketPath: SANDBOX_SOCKET,
       call: { tool: 'af_get_balance', args: { resourceId: policy.resourceId } },
       writeTargets: ['/', '/etc', '/usr', '/var', '/app', '/run'],
-      absentPaths: ['/var/run/docker.sock', '/run/docker.sock', homedir(), ...(process.env.SSH_AUTH_SOCK ? [process.env.SSH_AUTH_SOCK] : [])],
+      absentPaths: [...(await hostDockerSocketPaths()), homedir(), ...(process.env.SSH_AUTH_SOCK ? [process.env.SSH_AUTH_SOCK] : [])],
       connect: [...outbound, { host: '127.0.0.1', port: canaryPort }, { host: '::1', port: canaryPort }],
       timeoutMs: 2000,
     };
@@ -252,7 +252,10 @@ describe.skipIf(!DOCKER_TESTS)('sandbox image (Docker)', () => {
     }
   }, 120_000);
 
-  it('the docker socket exists on this host, so its absence inside is meaningful', () => {
-    expect(existsSync('/var/run/docker.sock') || existsSync('/run/docker.sock')).toBe(true);
+  it("the daemon's socket (rootful or rootless) exists on this host, so its absence inside is meaningful", async () => {
+    const socket = await daemonSocketPath();
+    expect(socket).toBeDefined();
+    expect(existsSync(socket ?? '')).toBe(true);
+    expect(await hostDockerSocketPaths()).toContain(socket);
   });
 });
