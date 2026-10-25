@@ -276,3 +276,52 @@ describe('fake guardian: reads', () => {
     expect(await list('2026-10-17')).toMatchObject({ ok: false, error: { code: 'INVALID_ARGUMENTS' } });
   });
 });
+
+describe('fake guardian: no live references out', () => {
+  it('returns copies of the policy, pending approvals and activity', async () => {
+    const g = createFakeGuardian({ policy });
+    await g.handleCall(agent, 'af_propose_transfer', transfer(9000));
+
+    const { policy: live } = await g.getPolicy();
+    live.transfers.allowedPayeeIds.push('attacker');
+    live.transfers.maxSingleMinor = 1_000_000;
+    expect((await g.getPolicy()).policy).toEqual(policy);
+    expect(await g.handleCall(agent, 'af_propose_transfer', transfer(100, 'attacker'))).toMatchObject({
+      ok: false,
+      error: { code: 'UNAPPROVED_PAYEE' },
+    });
+
+    const [p] = await g.listPending();
+    p!.amountMinor = 1;
+    expect((await g.listPending())[0]!.amountMinor).toBe(9000);
+
+    const [e] = await g.listActivity();
+    e!.metadata.forged = true;
+    expect((await g.listActivity())[0]!.metadata).toEqual({});
+  });
+
+  it('does not keep a reference to the policy it was given', async () => {
+    const mine = structuredClone(policy);
+    const g = createFakeGuardian({ policy: mine });
+    mine.transfers.allowedPayeeIds.push('attacker');
+    const next = structuredClone(policy);
+    await g.updatePolicy(next, 1);
+    next.transfers.allowedPayeeIds.push('attacker');
+    expect((await g.getPolicy()).policy.transfers.allowedPayeeIds).toEqual(policy.transfers.allowedPayeeIds);
+  });
+});
+
+describe('fake guardian: listActivity limit', () => {
+  it('defaults to 100 and caps at 1000', async () => {
+    const g = createFakeGuardian({ policy });
+    for (let i = 0; i < 1100; i++) await g.handleCall(agent, 'shell', {});
+    expect(await g.listActivity()).toHaveLength(100);
+    expect(await g.listActivity({ limit: 5 })).toHaveLength(5);
+    expect(await g.listActivity({ limit: 5000 })).toHaveLength(1000);
+  });
+
+  it.each([0, -1, 1.5, Number.NaN, Infinity])('rejects limit %s', async (limit) => {
+    const g = createFakeGuardian({ policy });
+    await expect(g.listActivity({ limit })).rejects.toThrow(RangeError);
+  });
+});

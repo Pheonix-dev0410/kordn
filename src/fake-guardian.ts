@@ -24,6 +24,8 @@ import {
 // No ledger, no rolling limits, no persistence. Not a security boundary.
 
 const APPROVAL_TTL_MS = 15 * 60_000;
+const DEFAULT_ACTIVITY_LIMIT = 100;
+const MAX_ACTIVITY_LIMIT = 1000;
 
 // af_propose_transfer has no rejected or expired state, so a retry of one reports failed with
 // the reason code; the exact state is in af_get_transfer_status. In-progress states report
@@ -248,7 +250,7 @@ export function createFakeGuardian(options: FakeGuardianOptions): Guardian {
       const out: PendingApproval[] = [];
       for (const t of transfers.values()) {
         expire(t);
-        if (t.state === 'PENDING_APPROVAL' && t.pending) out.push({ ...t.pending });
+        if (t.state === 'PENDING_APPROVAL' && t.pending) out.push(structuredClone(t.pending));
       }
       return out;
     },
@@ -279,7 +281,7 @@ export function createFakeGuardian(options: FakeGuardianOptions): Guardian {
     },
 
     async getPolicy() {
-      return { policy, version };
+      return { policy: structuredClone(policy), version };
     },
 
     async updatePolicy(next, expectedVersion): Promise<PolicyUpdateResult> {
@@ -294,12 +296,11 @@ export function createFakeGuardian(options: FakeGuardianOptions): Guardian {
     },
 
     async listActivity(filter: ActivityFilter = {}) {
+      const limit = filter.limit ?? DEFAULT_ACTIVITY_LIMIT;
+      if (!Number.isInteger(limit) || limit < 1) throw new RangeError(`invalid activity limit: ${limit}`);
       const events = filter.events;
       const matching = events ? activity.filter((e) => events.includes(e.event)) : activity;
-      return matching
-        .slice()
-        .reverse()
-        .slice(0, filter.limit ?? 100);
+      return structuredClone(matching.slice(-Math.min(limit, MAX_ACTIVITY_LIMIT)).reverse());
     },
   };
 }

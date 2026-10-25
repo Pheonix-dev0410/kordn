@@ -29,6 +29,7 @@ export type PolicyUpdateResult = { ok: true; version: number } | { ok: false; co
 
 export interface ActivityFilter {
   events?: AuditEvent['event'][];
+  /** A positive integer, default 100, capped at 1000. listActivity rejects anything else. */
   limit?: number;
 }
 
@@ -38,6 +39,8 @@ export interface ActivityFilter {
  * for them are a no-op and false.
  */
 export interface Guardian {
+  // Every value returned is a copy: changing it never changes guardian state.
+
   /**
    * Agent identity comes from the caller (stdio process or socket), never from args.
    * Never rejects: an internal failure resolves to INTERNAL_UNAVAILABLE, so a broken
