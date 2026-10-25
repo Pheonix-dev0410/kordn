@@ -291,3 +291,27 @@ describe('checkConfig: embedded assignments and URL credentials', () => {
     }
   });
 });
+
+describe('checkConfig on huge single-word values', () => {
+  // A long run of word characters with no '=' made the unanchored assignment regex quadratic.
+  it('scans a 1 MB word in an env value, env name, history line or label in well under a second', () => {
+    const word = 'a'.repeat(1024 * 1024);
+    for (const config of [
+      { env: [`F=${word}`], labels: {}, history: [] },
+      { env: [word], labels: {}, history: [] },
+      { env: [], labels: {}, history: [word] },
+      { env: [], labels: { note: word }, history: [] },
+      { env: [`F=${'x_'.repeat(512 * 1024)}`], labels: {}, history: [] },
+    ]) {
+      const started = performance.now();
+      expect(checkConfig(config)).toEqual([]);
+      expect(performance.now() - started).toBeLessThan(500);
+    }
+  });
+
+  it('still finds a secret assignment after a long word', () => {
+    expect(checkConfig({ env: [`F=${'a'.repeat(100_000)} GITHUB_TOKEN=x`], labels: {}, history: [] })).toEqual([
+      { where: 'env F', reason: 'secret-named assignment' },
+    ]);
+  });
+});

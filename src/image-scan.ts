@@ -101,7 +101,9 @@ export function isSecretName(name: string): boolean {
   );
 }
 
-const ASSIGNED_NAMES = /([A-Za-z_][A-Za-z0-9_]*)=/g;
+// Anchored at the start of a word: without the lookbehind, matchAll retries from every position
+// inside a long run of word characters, which is quadratic.
+const ASSIGNED_NAMES = /(?<![A-Za-z0-9_])([A-Za-z_][A-Za-z0-9_]*)=/g;
 
 export function checkPath(path: string): string | null {
   const p = path.replace(/^\.?\//, '');
