@@ -3,7 +3,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { gzipSync, zstdCompressSync } from 'node:zlib';
 import { afterEach, describe, expect, it } from 'vitest';
-import { checkConfig, checkPath, checkText, scanImageArchive } from '../src/image-scan.js';
+import { checkConfig, checkPath, checkText, createTextScanner, parseHistory, scanImageArchive } from '../src/image-scan.js';
 
 const dirs: string[] = [];
 afterEach(() => {
@@ -141,7 +141,7 @@ describe('scanImageArchive', () => {
     );
     const scan = await scanImageArchive(file);
     expect(scan.layers).toBe(3);
-    expect(scan.files).toBe(4);
+    expect(scan.entries).toBe(5);
     expect(scan.findings).toEqual([
       { where: `blobs/sha256/bbb:app/${'deep/'.repeat(30)}.env`, reason: 'env file' },
       { where: 'blobs/sha256/ccc:app/notes.txt', reason: 'private key' },
@@ -159,5 +159,79 @@ describe('scanImageArchive', () => {
     good[148] = '9'.charCodeAt(0);
     const file = archive(entry('blobs/sha256/aaa', good));
     await expect(scanImageArchive(file)).rejects.toThrow(/checksum/);
+  });
+});
+
+describe('secret names and URL credentials', () => {
+  const env = (...e: string[]) => checkConfig({ env: e, labels: {}, history: [] });
+
+  it('flags a secret-looking env name whatever its value', () => {
+    for (const e of ['API_KEY=', 'API_KEY= abc', 'API_KEY=\nabc', 'API_KEY=\tabc', 'DB_PASS=x', 'PASSWORD=x', 'MY_PASSWD=', 'AWS_ACCESS_KEY=x', 'GITHUB_TOKEN']) {
+      expect(env(e), JSON.stringify(e)).not.toEqual([]);
+    }
+  });
+
+  it('flags credentials in a *_URL value', () => {
+    expect(env('DATABASE_URL=postgres://kordn:hunter2@db:5432/kordn')).toEqual([{ where: 'env DATABASE_URL', reason: 'credentials in a URL' }]);
+    expect(env('DATABASE_URL=postgres://db:5432/kordn', 'PROXY_URL=http://proxy:3128')).toEqual([]);
+    expect(checkText('export REDIS_URL="redis://default:s3cret@cache:6379"')).toEqual(['credentials in a URL']);
+  });
+
+  it('passes ordinary names', () => {
+    expect(env('PATH=/usr/bin', 'NODE_ENV=production', 'SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt', 'HOME=/', 'PASSAGE=1')).toEqual([]);
+  });
+});
+
+describe('parseHistory', () => {
+  it('keeps a multi-line history entry whole, so a secret value stays with its name', () => {
+    const stdout = `${JSON.stringify('ENV API_TOKEN=\\\n  abc123')}\n${JSON.stringify('CMD ["/app/sandbox/agent.mjs"]')}\n`;
+    const history = parseHistory(stdout);
+    expect(history).toEqual(['ENV API_TOKEN=\\\n  abc123', 'CMD ["/app/sandbox/agent.mjs"]']);
+    expect(checkConfig({ env: [], labels: {}, history })).toEqual([{ where: 'history[0]', reason: 'secret-named assignment' }]);
+  });
+
+  it('rejects output that is not one JSON string per line', () => {
+    expect(() => parseHistory('ENV A=1\n')).toThrow(/history/);
+    expect(() => parseHistory('{"a":1}\n')).toThrow(/history/);
+  });
+});
+
+describe('createTextScanner', () => {
+  it('finds a pattern split across two chunks', () => {
+    const s = createTextScanner();
+    const text = `${'x'.repeat(100)} ${GH_TOKEN} ${'y'.repeat(100)}`;
+    const cut = text.indexOf('ghp_') + 10;
+    s.write(Buffer.from(text.slice(0, cut), 'latin1'));
+    s.write(Buffer.from(text.slice(cut), 'latin1'));
+    expect(s.reasons()).toEqual(['GitHub token']);
+  });
+
+  it('reports each reason once', () => {
+    const s = createTextScanner();
+    for (let i = 0; i < 5; i++) s.write(Buffer.from(`${GH_TOKEN}\n`));
+    expect(s.reasons()).toEqual(['GitHub token']);
+  });
+});
+
+describe('scanImageArchive limits', () => {
+  it('scans the content of files over 4 MiB', async () => {
+    const big = Buffer.concat([Buffer.alloc(5 * 1024 * 1024, 'a'), Buffer.from(`\n${GH_TOKEN}\n`)]);
+    const file = archive(entry('blobs/sha256/aaa', gzipSync(tar(entry('app/bundle.js', big)))));
+    expect((await scanImageArchive(file)).findings).toEqual([{ where: 'blobs/sha256/aaa:app/bundle.js', reason: 'GitHub token' }]);
+  });
+
+  it('name-checks links and directories too', async () => {
+    const layer = tar(entry('app/kordn.sqlite', '', '1'), entry('app/.env', '', '2'), entry('root/.ssh/', '', '5'));
+    const scan = await scanImageArchive(archive(entry('blobs/sha256/aaa', layer)));
+    expect(scan.findings).toEqual([
+      { where: 'blobs/sha256/aaa:app/kordn.sqlite', reason: 'database file' },
+      { where: 'blobs/sha256/aaa:app/.env', reason: 'env file' },
+      { where: 'blobs/sha256/aaa:root/.ssh/', reason: 'credentials or VCS directory' },
+    ]);
+  });
+
+  it('refuses an unrecognised blob over the size limit instead of skipping it', async () => {
+    const file = archive(entry('blobs/sha256/aaa', Buffer.alloc(4 * 1024 * 1024 + 1, 'z')));
+    await expect(scanImageArchive(file)).rejects.toThrow(/unrecognised blob/);
   });
 });
