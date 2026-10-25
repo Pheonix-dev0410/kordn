@@ -1,6 +1,6 @@
 import { createServer, type Server, type Socket } from 'node:net';
 import type { z } from 'zod';
-import type { Guardian } from './guardian-api.js';
+import type { CallResult, Guardian } from './guardian-api.js';
 import { MAX_FRAME_BYTES, type SocketResponse, SocketRequest } from './schema.js';
 
 // Contain mode: the guardian side of the Unix socket. Newline-delimited JSON frames.
@@ -34,7 +34,14 @@ function handleConnection(guardian: Guardian, agentId: string, socket: Socket): 
       const request = parseFrame(line);
       if (!request) return socket.destroy();
       queue = queue.then(async () => {
-        const result = await guardian.handleCall(agentId, request.tool, request.args);
+        // A throwing guardian must fail closed for this call without wedging the queue
+        // or crashing the process on an unhandled rejection.
+        let result: CallResult;
+        try {
+          result = await guardian.handleCall(agentId, request.tool, request.args);
+        } catch {
+          result = { ok: false, error: { code: 'INTERNAL_UNAVAILABLE', message: 'INTERNAL_UNAVAILABLE' } };
+        }
         const response: SocketResponse = result.ok
           ? { v: 1, id: request.id, ok: true, result: result.result }
           : { v: 1, id: request.id, ok: false, error: result.error };

@@ -67,4 +67,27 @@ describe('guardian socket', () => {
     const path = await start();
     expect((await exchange(path, 'x'.repeat(MAX_FRAME_BYTES + 1), 1)).closed).toBe(true);
   });
+
+  it('answers INTERNAL_UNAVAILABLE when the guardian throws, and keeps serving', async () => {
+    const guardian = createFakeGuardian({ policy });
+    let calls = 0;
+    const flaky = {
+      ...guardian,
+      handleCall: (agent: string, tool: unknown, args: unknown) => {
+        calls += 1;
+        return calls === 1 ? Promise.reject(new Error('db locked')) : guardian.handleCall(agent, tool, args);
+      },
+    };
+    const path = join(mkdtempSync(join(tmpdir(), 'kordn-')), 'g.sock');
+    server = await serveGuardianSocket(flaky, policy.agentId, path);
+    const { lines } = await exchange(
+      path,
+      frame('1', 'af_get_balance', { resourceId: policy.resourceId }) + frame('2', 'af_get_balance', { resourceId: policy.resourceId }),
+      2,
+    );
+    expect(lines).toMatchObject([
+      { v: 1, id: '1', ok: false, error: { code: 'INTERNAL_UNAVAILABLE' } },
+      { v: 1, id: '2', ok: true, result: { currency: 'USD' } },
+    ]);
+  });
 });
