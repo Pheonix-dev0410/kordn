@@ -1,4 +1,5 @@
-import { chmodSync, existsSync, mkdtempSync, readdirSync, rmSync } from 'node:fs';
+import { spawnSync } from 'node:child_process';
+import { chmodSync, existsSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { createServer } from 'node:net';
 import { homedir, tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -11,12 +12,15 @@ import {
   checkContainer,
   hardenedRunFlags,
   hostAddresses,
+  hostDockerSocketPaths,
   IDLE_SCRIPT,
+  launcherNamespaces,
+  reapStaleContainers,
   runContain,
   socketFileMode,
   startCanary,
 } from '../src/sandbox.js';
-import type { CheckId, IsolationExpectations } from '../src/sandbox-checks.js';
+import { CHECK_IDS, type CheckId, type IsolationExpectations } from '../src/sandbox-checks.js';
 import { Policy } from '../src/schema.js';
 import { buildSandboxImage, DOCKER_TESTS, docker, dockerOk, hostUser, leftovers, removeImages, testName } from './docker.js';
 
@@ -39,13 +43,18 @@ function tempDir(): string {
 }
 
 const failing = (r: { checks: { id: CheckId; pass: boolean }[] }) => r.checks.filter((c) => !c.pass).map((c) => c.id);
-/** On this rootful host every report also fails `rootless`. */
+/**
+ * On a rootful daemon every report also fails `rootless`, and `namespaces` because the container
+ * shares the host's initial user namespace. That baseline is honest, not a test artefact.
+ */
 const expectFailing = (r: { checks: { id: CheckId; pass: boolean }[]; mode: string }, ids: CheckId[]) => {
-  expect(failing(r)).toEqual(rootless ? ids : ['rootless', ...ids]);
+  const baseline: CheckId[] = rootless ? [] : ['rootless', 'namespaces'];
+  const details = r.checks.filter((c) => !c.pass).map((c) => `${c.id}: ${(c as { detail?: string }).detail ?? ''}`);
+  expect(failing(r), details.join('\n')).toEqual(CHECK_IDS.filter((id) => ids.includes(id) || baseline.includes(id)));
   expect(r.mode).toBe(failing(r).length ? 'guard' : 'contain');
 };
 
-const VALUE_FLAGS = new Set(['--network', '--cap-drop', '--security-opt', '--pids-limit', '--memory', '--memory-swap', '--cpus', '--tmpfs', '--user', '--mount']);
+const VALUE_FLAGS = new Set(['--network', '--ipc', '--cap-drop', '--security-opt', '--pids-limit', '--memory', '--memory-swap', '--cpus', '--tmpfs', '--user', '--mount']);
 const drop = (flags: string[], ...names: string[]) =>
   flags.filter((f, i) => !names.includes(f) && !(i > 0 && names.includes(flags[i - 1] ?? '') && VALUE_FLAGS.has(flags[i - 1] ?? '')));
 const set = (flags: string[], name: string, value: string) => flags.map((f, i) => (flags[i - 1] === name ? value : f));
@@ -76,6 +85,8 @@ async function launch(v: Variant) {
       canaryPort: canary.port,
       hostAddresses: hostAddresses(),
       imageEnv,
+      hostNamespaces: launcherNamespaces(),
+      dockerSockets: await hostDockerSocketPaths(),
       ...v.expectations?.({ dir }),
     };
     return await checkContainer({ docker: 'docker', container: name, info, expectations, canary });
@@ -99,10 +110,32 @@ const variants: [string, Variant, CheckId[]][] = [
   // Root with every capability dropped has no CAP_DAC_OVERRIDE, so it can't open the 0600 socket either.
   ['root user', { edit: (f) => set(f, '--user', '0:0') }, ['nonRoot', 'guardianSocket']],
   ['no cap-drop', { edit: (f) => drop(f, '--cap-drop') }, ['capabilities']],
-  ['no no-new-privileges', { edit: (f) => drop(f, '--security-opt') }, ['noNewPrivileges']],
-  ['seccomp unconfined', { edit: (f) => [...f, '--security-opt', 'seccomp=unconfined'] }, ['seccomp']],
-  ['--pid host', { edit: (f) => [...f, '--pid', 'host'] }, ['namespaces']],
-  ['--ipc host', { edit: (f) => [...f, '--ipc', 'host'] }, ['namespaces']],
+  ['no no-new-privileges', { edit: (f) => drop(f, '--security-opt') }, ['noNewPrivileges', 'hardening']],
+  ['seccomp unconfined', { edit: (f) => [...f, '--security-opt', 'seccomp=unconfined'] }, ['seccomp', 'hardening']],
+  // Docker adds label=disable by itself for a host pid or ipc namespace; the exact
+  // security-option allowlist catches that too.
+  ['--pid host', { edit: (f) => [...f, '--pid', 'host'] }, ['hardening', 'namespaces']],
+  ['--ipc host', { edit: (f) => set(f, '--ipc', 'host') }, ['onlyGuardianSocket', 'hardening', 'namespaces']],
+  ['--ipc private (with /dev/shm)', { edit: (f) => set(f, '--ipc', 'private') }, ['onlyGuardianSocket', 'namespaces']],
+  ['--uts host', { edit: (f) => [...f, '--uts', 'host'] }, ['namespaces']],
+  // Review round 1: these used to pass every check but rootless.
+  [
+    'a permissive (allow-all) seccomp profile',
+    {
+      edit: (f, { dir }) => [...f, '--security-opt', `seccomp=${join(dir, 'allow-all.json')}`],
+      setup: async ({ dir }) => {
+        writeFileSync(join(dir, 'allow-all.json'), JSON.stringify({ defaultAction: 'SCMP_ACT_ALLOW' }));
+        return () => {};
+      },
+    },
+    ['seccomp', 'hardening'],
+  ],
+  ['systempaths=unconfined', { edit: (f) => [...f, '--security-opt', 'systempaths=unconfined'] }, ['hardening']],
+  ['apparmor=unconfined', { edit: (f) => [...f, '--security-opt', 'apparmor=unconfined'] }, ['hardening']],
+  ['label=disable', { edit: (f) => [...f, '--security-opt', 'label=disable'] }, ['hardening']],
+  ['a device cgroup rule', { edit: (f) => [...f, '--device-cgroup-rule', 'a *:* rwm'] }, ['onlyGuardianSocket']],
+  ['a /tmp tmpfs re-enabling exec, suid and dev', { edit: (f) => set(f, '--tmpfs', '/tmp:rw,nosuid,nodev,noexec,size=64m,exec,suid,dev') }, ['readOnlyRootfs']],
+  ['another runtime name (the containerd shim, outside the allowlist)', { edit: (f) => [...f, '--runtime', 'io.containerd.runc.v2'] }, ['hardening']],
   ['no resource limits', { edit: (f) => drop(f, '--pids-limit', '--memory', '--memory-swap', '--cpus') }, ['resourceLimits']],
   ['a variable injected with -e', { edit: (f) => [...f, '-e', 'API_TOKEN=s3cret'] }, ['noHostEnv']],
   [
@@ -206,6 +239,25 @@ describe.skipIf(!DOCKER_TESTS)('kordn contain (Docker)', () => {
         expect(result.report.checks.find((c) => c.id === 'hostServicesUnreachable')?.detail).toContain(`admin UI port ${port}`);
       } finally {
         admin.close();
+      }
+    }, 120_000);
+
+    it('reapStaleContainers removes sandboxes whose launcher is gone, and only those', async () => {
+      // A pid that just exited stands in for a launcher killed before its cleanup ran.
+      const deadPid = spawnSync(process.execPath, ['-e', '']).pid;
+      const orphan = testName('orphan');
+      const live = testName('live');
+      for (const [name, pid] of [[orphan, deadPid], [live, process.pid]] as const) {
+        await dockerOk(['run', '--detach', '--name', name, '--label', `kordn.contain=${pid}`, '--network', 'none', image, '-e', IDLE_SCRIPT]);
+      }
+      try {
+        const reaped = await reapStaleContainers();
+        const orphanId = (await docker(['inspect', '--type', 'container', '--format', '{{.Id}}', orphan])).stdout.trim();
+        expect(orphanId).toBe('');
+        expect(reaped.length).toBeGreaterThanOrEqual(1);
+        expect((await docker(['inspect', '--type', 'container', live])).code).toBe(0);
+      } finally {
+        await docker(['rm', '--force', orphan, live]);
       }
     }, 120_000);
 
