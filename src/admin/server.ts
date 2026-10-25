@@ -115,9 +115,9 @@ export async function startAdminServer(options: AdminServerOptions): Promise<Adm
     // Counted before anything else, so failed and malformed attempts use up the budget too.
     if (decisions.full()) throw new HttpError(429, 'Too many approval decisions. Wait a minute.');
     decisions.add();
-    const reservationId = token256(r.form, 'reservationId');
-    const nonce = token256(r.form, 'nonce');
-    const digest = kind === 'approve' ? token256(r.form, 'digest') : '';
+    const reservationId = hiddenField(r.form, 'reservationId');
+    const nonce = hiddenField(r.form, 'nonce');
+    const digest = kind === 'approve' ? hiddenField(r.form, 'digest') : '';
     if (reservationId === null || nonce === null || digest === null) {
       return showApprovals(r, 400, ['This approval form is incomplete. Reload the page.']);
     }
@@ -342,7 +342,7 @@ async function readForm(req: IncomingMessage): Promise<Form> {
 }
 
 /** A required hidden field: present once, 1 to 256 characters. */
-function token256(form: Form, name: string): string | null {
+function hiddenField(form: Form, name: string): string | null {
   const value = form.one(name);
   return value !== null && value.length >= 1 && value.length <= 256 ? value : null;
 }
