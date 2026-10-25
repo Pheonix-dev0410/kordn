@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto';
 import type { PendingApproval } from '../guardian-api.js';
-import type { AuditEvent } from '../schema.js';
+import { AmountMinor, type AuditEvent } from '../schema.js';
 import { formatUsd, POLICY_FIELDS, type PolicyFormValues } from './forms.js';
 import { Html, html } from './html.js';
 
@@ -131,21 +131,27 @@ export function policyPage(ctx: PageContext & { csrf: string }, view: PolicyView
 
 export function approvalsPage(ctx: PageContext & { csrf: string }, pending: readonly PendingApproval[]): Html {
   const csrf = html`<input type="hidden" name="csrf" value="${ctx.csrf}">`;
-  const rows = pending.map(
-    (p) => html`<tr>
+  const rows = pending.map((p) => {
+    // Never offer to approve an amount we can't show exactly. Reject stays, to clear it.
+    const valid = AmountMinor.safeParse(p.amountMinor).success;
+    return html`<tr>
       <td><code>${p.agentId}</code></td>
       <td><code>${p.payeeId}</code></td>
-      <td>$${formatUsd(p.amountMinor)} ${p.currency}</td>
+      <td>${valid ? html`$${formatUsd(p.amountMinor)} ${p.currency}` : html`<strong>Invalid amount</strong>`}</td>
       <td><code>${p.resourceId}</code></td>
       <td>${p.policyVersion}</td>
       <td>${p.expiresAt}</td>
       <td>
-        <form class="inline" method="post" action="/approvals/approve">${csrf}
+        ${
+          valid
+            ? html`<form class="inline" method="post" action="/approvals/approve">${csrf}
           <input type="hidden" name="reservationId" value="${p.reservationId}">
           <input type="hidden" name="digest" value="${p.digest}">
           <input type="hidden" name="nonce" value="${p.nonce}">
           <button>Approve</button>
-        </form>
+        </form>`
+            : null
+        }
         <form class="inline" method="post" action="/approvals/reject">${csrf}
           <input type="hidden" name="reservationId" value="${p.reservationId}">
           <input type="hidden" name="nonce" value="${p.nonce}">
@@ -153,8 +159,8 @@ export function approvalsPage(ctx: PageContext & { csrf: string }, pending: read
         </form>
         <br><small><code>${p.reservationId}</code></small>
       </td>
-    </tr>`,
-  );
+    </tr>`;
+  });
   return layout(
     ctx,
     'Approvals',

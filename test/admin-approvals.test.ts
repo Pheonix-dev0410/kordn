@@ -147,6 +147,37 @@ describe('admin approvals', () => {
     expect((await s.post('/approvals/approve', approveForm(p))).status).toBe(303);
   });
 
+  it('shows a pending item with a bad amount as invalid, with no approve button', async () => {
+    const fake = createFakeGuardian({ policy });
+    const item = (id: string, amountMinor: number): PendingApproval => ({
+      reservationId: `tr_${id}`,
+      agentId: agent,
+      resourceId: policy.resourceId,
+      payeeId: 'utilities',
+      amountMinor,
+      currency: 'USD',
+      policyVersion: 1,
+      digest: `digest-${id}`,
+      nonce: `nonce-${id}`,
+      expiresAt: '2026-10-25T12:15:00.000Z',
+    });
+    const bad = [item('neg', -5), item('zero', 0), item('frac', 1.5), item('nan', Number.NaN), item('huge', 2 ** 53)];
+    const pending = [...bad, item('good', 9000)];
+    const { server } = await started({ guardian: { ...fake, listPending: async () => pending } });
+    const s = await login(server);
+    const page = (await s.get('/approvals')).body;
+    for (const p of bad) {
+      expect(page, p.reservationId).not.toContain(`name="digest" value="${p.digest}"`);
+      // Reject still works, so the user can clear it.
+      expect(page, p.reservationId).toContain(`name="nonce" value="${p.nonce}"`);
+    }
+    expect(page.match(/Invalid amount/g)).toHaveLength(bad.length);
+    expect(page).not.toContain('-1.-5');
+    expect(page).not.toContain('NaN');
+    expect(page).toContain('name="digest" value="digest-good"');
+    expect(page).toContain('$90.00');
+  });
+
   it('renders hostile pending fields as literal text', async () => {
     const fake = createFakeGuardian({ policy });
     const hostile: PendingApproval = {
