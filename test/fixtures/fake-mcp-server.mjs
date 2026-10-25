@@ -1,5 +1,5 @@
 // Stand-in for `kordn --guardian <socket>` over stdio until the real server (#9) lands.
-// Usage: fake-mcp-server.mjs <log file> [stateless|deny]
+// Usage: fake-mcp-server.mjs <log file> [stateless|deny|noisy]
 import { appendFileSync } from 'node:fs';
 import { createInterface } from 'node:readline';
 
@@ -10,6 +10,12 @@ createInterface({ input: process.stdin }).on('line', (line) => {
   appendFileSync(log, `${line}\n`);
   const msg = JSON.parse(line);
   if (msg.id === undefined) return;
+  if (variant === 'noisy') {
+    // Junk, a notification and a server-to-client request reusing the pending id, before the answer.
+    process.stdout.write('null\nnot json\n');
+    send({ method: 'notifications/message', params: { level: 'info', data: 'hi' } });
+    send({ id: msg.id, method: 'ping' });
+  }
   switch (msg.method) {
     case 'initialize':
       if (variant === 'stateless') return send({ id: msg.id, error: { code: -32601, message: 'Method not found' } });

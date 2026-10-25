@@ -34,8 +34,11 @@ createInterface({ input: child.stdout }).on('line', (line) => {
   try {
     msg = JSON.parse(line);
   } catch {
-    return fail('MCP server sent a line that is not JSON');
+    return; // not JSON: ignore it, the request timeout still applies
   }
+  // Only a response settles a request: it has result or error and no method. A server
+  // request can carry an id that collides with ours.
+  if (msg === null || typeof msg !== 'object' || 'method' in msg || !('result' in msg || 'error' in msg)) return;
   const resolve = waiting.get(msg.id);
   if (!resolve) return;
   waiting.delete(msg.id);
@@ -51,6 +54,8 @@ const request = (method, params) =>
   });
 
 // Older protocol versions need initialize; a stateless server answers it with an error.
+// Unverified: the 2026-07-28 protocol may also want version metadata on every request
+// (_meta). Check against the real kordn server (#9) before relying on this agent.
 const init = await request('initialize', {
   protocolVersion: '2025-11-25',
   capabilities: {},

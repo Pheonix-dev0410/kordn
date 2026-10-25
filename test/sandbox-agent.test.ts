@@ -60,6 +60,15 @@ describe('sandbox agent', () => {
     expect(received[3]).toMatchObject({ params: { arguments: { resourceId: 'mock-bank:savings-02' } } });
   });
 
+  it('ignores junk lines, notifications and server requests that reuse a pending id', async () => {
+    const { code, lines } = await runAgent('noisy');
+    expect(code).toBe(0);
+    expect(lines).toEqual([
+      { step: 'tools/list', tools: ['af_get_balance', 'af_list_transactions'] },
+      { step: 'tools/call', tool: 'af_get_balance', isError: false, result: { currency: 'USD', balanceMinor: 1 } },
+    ]);
+  });
+
   it('exits non-zero when the read call is denied', async () => {
     const { code, lines } = await runAgent('deny');
     expect(code).toBe(1);
