@@ -207,6 +207,7 @@ export function createFakeGuardian(options: FakeGuardianOptions): Guardian {
       switch (call.tool) {
         case 'af_get_balance':
           if (call.resourceId !== policy.resourceId) return deny(agentId, call.tool, 'UNKNOWN_ACTION');
+          if (!policy.reads.allow) return deny(agentId, call.tool, 'CAPABILITY_DISABLED');
           log('read.executed', agentId, { tool: call.tool });
           return {
             ok: true,
@@ -215,7 +216,11 @@ export function createFakeGuardian(options: FakeGuardianOptions): Guardian {
         case 'af_list_transactions': {
           if (call.resourceId !== policy.resourceId) return deny(agentId, call.tool, 'UNKNOWN_ACTION');
           if (!policy.reads.allow) return deny(agentId, call.tool, 'CAPABILITY_DISABLED');
-          const transactions = TRANSACTIONS.filter((tx) => transactionDate(tx, FIXTURE_EPOCH_MS) >= call.fromDate)
+          // Denied rather than clamped, like any other out-of-policy argument. Measured from the
+          // mock bank's "today" (the fixture epoch), which its transaction dates are relative to.
+          const oldest = new Date(FIXTURE_EPOCH_MS - policy.reads.maxLookbackDays * 86_400_000).toISOString().slice(0, 10);
+          if (call.fromDate < oldest) return deny(agentId, call.tool, 'INVALID_ARGUMENTS');
+          const transactions =TRANSACTIONS.filter((tx) => transactionDate(tx, FIXTURE_EPOCH_MS) >= call.fromDate)
             .slice(0, Math.min(call.limit, policy.reads.maxRowsPerCall))
             .map((tx) => ({
               transactionId: tx.transactionId,

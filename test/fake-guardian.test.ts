@@ -254,3 +254,25 @@ describe('fake guardian: idempotency', () => {
     expect(await g.handleCall(agent, 'af_propose_transfer', call)).toMatchObject({ ok: true, result: { state: 'succeeded' } });
   });
 });
+
+describe('fake guardian: reads', () => {
+  const noReads = { ...policy, reads: { ...policy.reads, allow: false } };
+
+  it('denies a balance read when reads are disabled', async () => {
+    const g = createFakeGuardian({ policy: noReads });
+    expect(await g.handleCall(agent, 'af_get_balance', { resourceId: policy.resourceId })).toMatchObject({
+      ok: false,
+      error: { code: 'CAPABILITY_DISABLED' },
+    });
+    expect(await g.listActivity({ events: ['read.executed'] })).toEqual([]);
+  });
+
+  it('denies a transaction list reaching further back than maxLookbackDays', async () => {
+    // The mock bank's "today" is the fixture epoch, 2026-10-25.
+    const g = createFakeGuardian({ policy: { ...policy, reads: { ...policy.reads, maxLookbackDays: 7 } } });
+    const list = (fromDate: string) =>
+      g.handleCall(agent, 'af_list_transactions', { resourceId: policy.resourceId, fromDate, limit: 20 });
+    expect(await list('2026-10-18')).toMatchObject({ ok: true });
+    expect(await list('2026-10-17')).toMatchObject({ ok: false, error: { code: 'INVALID_ARGUMENTS' } });
+  });
+});
