@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import { connect } from 'node:net';
+import { connect, type Socket } from 'node:net';
 import { z } from 'zod';
 import type { CallResult, Guardian } from './guardian-api.js';
 import { DenyCode, MAX_FRAME_BYTES } from './schema.js';
@@ -7,8 +7,12 @@ import { DenyCode, MAX_FRAME_BYTES } from './schema.js';
 // Contain mode: the MCP server's side of the guardian Unix socket. One connection per
 // call, so a dead or wedged guardian only ever costs the call in flight. Any failure
 // (socket down, timeout, bad reply) is INTERNAL_UNAVAILABLE. There is no fallback.
+// The guardian closes connections past its cap without logging them, so calls beyond
+// maxConcurrent wait in a FIFO queue instead of being turned away unlogged.
 
 export const DEFAULT_GUARDIAN_TIMEOUT_MS = 10_000;
+// Comfortably under the guardian socket's default of 32 connections.
+export const DEFAULT_MAX_CONCURRENT = 16;
 // Replies can carry 20 transactions of untrusted text, so allow more than a request frame.
 const MAX_REPLY_BYTES = 1024 * 1024;
 const MAX_TOOL_CHARS = 64;
@@ -26,7 +30,10 @@ const Reply = z.union([
 const UNAVAILABLE: CallResult = { ok: false, error: { code: 'INTERNAL_UNAVAILABLE', message: 'INTERNAL_UNAVAILABLE' } };
 
 export interface GuardianClientOptions {
+  /** Per call, including time spent queued. */
   timeoutMs?: number;
+  /** Connections open at once. Further calls queue. */
+  maxConcurrent?: number;
 }
 
 /**
@@ -35,33 +42,65 @@ export interface GuardianClientOptions {
  */
 export function createGuardianClient(socketPath: string, options: GuardianClientOptions = {}): Guardian['handleCall'] {
   const timeoutMs = options.timeoutMs ?? DEFAULT_GUARDIAN_TIMEOUT_MS;
-  return (_agentId, tool, args) => {
-    const id = randomUUID();
-    return new Promise<CallResult>((resolve) => {
-      let buffered = '';
+  const maxConcurrent = options.maxConcurrent ?? DEFAULT_MAX_CONCURRENT;
+  // 0 or NaN would queue every call until it times out.
+  if (!Number.isSafeInteger(maxConcurrent) || maxConcurrent < 1) throw new RangeError(`invalid maxConcurrent: ${maxConcurrent}`);
+
+  const queue: (() => void)[] = [];
+  let active = 0;
+  const pump = () => {
+    while (active < maxConcurrent && queue.length > 0) {
+      active += 1;
+      queue.shift()?.();
+    }
+  };
+
+  return (_agentId, tool, args) =>
+    new Promise<CallResult>((resolve) => {
+      let socket: Socket | undefined;
       let settled = false;
-      const socket = connect(socketPath);
       const finish = (result: CallResult) => {
         if (settled) return;
         settled = true;
         clearTimeout(timer);
-        socket.destroy();
+        if (socket) {
+          socket.destroy();
+          active -= 1;
+          // Deferred so queued calls whose timeout fires in this same tick drop out first,
+          // instead of each opening a connection only to close it at once.
+          setImmediate(pump);
+        } else {
+          const queued = queue.indexOf(start);
+          if (queued !== -1) queue.splice(queued, 1);
+        }
         resolve(result);
       };
+      // Started now, not at dispatch: a hung guardian fails queued calls on time too.
       const timer = setTimeout(() => finish(UNAVAILABLE), timeoutMs);
-
-      socket.setEncoding('utf8');
-      socket.on('connect', () => socket.write(`${encodeFrame(id, tool, args)}\n`));
-      socket.on('data', (chunk: string) => {
-        buffered += chunk;
-        const newline = buffered.indexOf('\n');
-        if (newline !== -1) return finish(decodeReply(id, buffered.slice(0, newline)));
-        if (Buffer.byteLength(buffered, 'utf8') > MAX_REPLY_BYTES) finish(UNAVAILABLE);
-      });
-      socket.on('error', () => finish(UNAVAILABLE));
-      socket.on('close', () => finish(UNAVAILABLE));
+      const start = () => {
+        const id = randomUUID();
+        socket = exchange(socketPath, id, encodeFrame(id, tool, args), finish);
+      };
+      queue.push(start);
+      pump();
     });
-  };
+}
+
+/** Send one frame on a fresh connection and report the reply, or UNAVAILABLE, exactly once via `finish`. */
+function exchange(socketPath: string, id: string, frame: string, finish: (result: CallResult) => void): Socket {
+  let buffered = '';
+  const socket = connect(socketPath);
+  socket.setEncoding('utf8');
+  socket.on('connect', () => socket.write(`${frame}\n`));
+  socket.on('data', (chunk: string) => {
+    buffered += chunk;
+    const newline = buffered.indexOf('\n');
+    if (newline !== -1) return finish(decodeReply(id, buffered.slice(0, newline)));
+    if (Buffer.byteLength(buffered, 'utf8') > MAX_REPLY_BYTES) finish(UNAVAILABLE);
+  });
+  socket.on('error', () => finish(UNAVAILABLE));
+  socket.on('close', () => finish(UNAVAILABLE));
+  return socket;
 }
 
 /**

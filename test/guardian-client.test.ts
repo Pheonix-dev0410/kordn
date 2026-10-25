@@ -141,3 +141,72 @@ describe('guardian socket client', () => {
     expect(await guardian.listActivity({ events: ['policy.denied'] })).toHaveLength(2);
   });
 });
+
+describe('guardian socket client concurrency', () => {
+  it('rejects a maxConcurrent that is not a positive integer', () => {
+    for (const maxConcurrent of [0, -1, 1.5, Number.NaN, Number.POSITIVE_INFINITY]) {
+      expect(() => createGuardianClient('/tmp/x.sock', { maxConcurrent })).toThrow(RangeError);
+    }
+  });
+
+  it('answers and logs 40 concurrent calls, staying under the socket connection cap', async () => {
+    const path = socketPath();
+    const guardian = createFakeGuardian({ policy });
+    let inFlight = 0;
+    let peak = 0;
+    const slow = {
+      ...guardian,
+      handleCall: async (agent: string, tool: unknown, args: unknown) => {
+        peak = Math.max(peak, ++inFlight);
+        await new Promise((resolve) => setTimeout(resolve, 50));
+        inFlight -= 1;
+        return guardian.handleCall(agent, tool, args);
+      },
+    };
+    servers.push(await serveGuardianSocket(slow, policy.agentId, path));
+    const handleCall = createGuardianClient(path);
+    const results = await Promise.all(
+      Array.from({ length: 40 }, () => handleCall('a', 'af_get_balance', { resourceId: policy.resourceId })),
+    );
+    expect(results.filter((r) => r.ok)).toHaveLength(40);
+    expect(await guardian.listActivity({ events: ['read.executed'], limit: 100 })).toHaveLength(40);
+    expect(peak).toBeLessThanOrEqual(16);
+  });
+
+  it('dispatches queued calls in arrival order', async () => {
+    const seen: string[] = [];
+    const path = await startRaw((socket) => {
+      socket.setEncoding('utf8');
+      socket.once('data', (line: string) => {
+        const { id, tool } = JSON.parse(line) as { id: string; tool: string };
+        seen.push(tool);
+        // Answer later than the next call queues up, so order is decided by the queue.
+        setTimeout(() => socket.end(`${JSON.stringify({ v: 1, id, ok: true, result: {} })}\n`), 5);
+      });
+    });
+    const handleCall = createGuardianClient(path, { maxConcurrent: 1 });
+    const tools = ['t0', 't1', 't2', 't3', 't4', 't5'];
+    await Promise.all(tools.map((tool) => handleCall('a', tool, {})));
+    expect(seen).toEqual(tools);
+  });
+
+  it('fails queued calls closed when the guardian hangs, without leaking sockets', async () => {
+    const open = new Set<Socket>();
+    let peak = 0;
+    const path = await startRaw((socket) => {
+      open.add(socket);
+      peak = Math.max(peak, open.size);
+      socket.on('close', () => open.delete(socket));
+      socket.resume(); // read (and ignore) the frame, so the client's hang-up is seen
+    });
+    const handleCall = createGuardianClient(path, { timeoutMs: 200, maxConcurrent: 2 });
+    const started = Date.now();
+    const results = await Promise.all(Array.from({ length: 6 }, () => handleCall('a', 'af_get_balance', {})));
+    expect(results).toEqual(Array.from({ length: 6 }, () => unavailable));
+    // The timeout counts time spent queued: nobody waits for a slot and then a full timeout more.
+    expect(Date.now() - started).toBeLessThan(1000);
+    expect(peak).toBeLessThanOrEqual(2);
+    for (let i = 0; i < 50 && open.size > 0; i++) await new Promise((resolve) => setTimeout(resolve, 10));
+    expect(open.size).toBe(0);
+  });
+});
