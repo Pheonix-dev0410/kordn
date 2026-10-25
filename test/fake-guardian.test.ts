@@ -135,3 +135,70 @@ describe('fake guardian: one agent', () => {
     expect((await g.getPolicy()).policy.agentId).toBe(agent);
   });
 });
+
+describe('fake guardian: idempotency', () => {
+  const ref = (r: unknown) => (r as { ok: true; result: { transferRef: string } }).result.transferRef;
+
+  it('returns the same transfer for a retried key, without executing it again', async () => {
+    const g = createFakeGuardian({ policy });
+    const first = await g.handleCall(agent, 'af_propose_transfer', transfer(6000));
+    const again = await g.handleCall(agent, 'af_propose_transfer', transfer(6000));
+    expect(first).toMatchObject({ ok: true, result: { state: 'succeeded' } });
+    expect(again).toEqual(first);
+    expect(await g.listActivity({ events: ['transfer.succeeded'] })).toHaveLength(1);
+  });
+
+  it('denies a reused key with a different request as IDEMPOTENCY_CONFLICT, and logs it', async () => {
+    const g = createFakeGuardian({ policy });
+    await g.handleCall(agent, 'af_propose_transfer', transfer(6000));
+    const changed = { ...transfer(6000), amountMinor: 6001 };
+    expect(await g.handleCall(agent, 'af_propose_transfer', changed)).toEqual({
+      ok: false,
+      error: { code: 'IDEMPOTENCY_CONFLICT', message: 'IDEMPOTENCY_CONFLICT' },
+    });
+    expect((await g.listActivity({ events: ['policy.denied'] }))[0]).toMatchObject({ reasonCode: 'IDEMPOTENCY_CONFLICT' });
+    expect(await g.listActivity({ events: ['transfer.succeeded'] })).toHaveLength(1);
+  });
+
+  it('returns the settled state when a pending transfer is retried after approval', async () => {
+    const g = createFakeGuardian({ policy });
+    const first = await g.handleCall(agent, 'af_propose_transfer', transfer(9000));
+    expect(first).toMatchObject({ ok: true, result: { state: 'pending_approval' } });
+    expect(await g.handleCall(agent, 'af_propose_transfer', transfer(9000))).toEqual(first);
+    expect(await g.listPending()).toHaveLength(1);
+    const [p] = await g.listPending();
+    await g.approve(p!.reservationId, p!.digest, p!.nonce);
+    expect(await g.handleCall(agent, 'af_propose_transfer', transfer(9000))).toEqual({
+      ok: true,
+      result: { state: 'succeeded', transferRef: ref(first), reasonCode: null },
+    });
+    expect(await g.listActivity({ events: ['transfer.succeeded'] })).toHaveLength(1);
+  });
+
+  it('reports a rejected or expired transfer as failed, with its reason, on retry', async () => {
+    let now = Date.UTC(2026, 9, 25);
+    const g = createFakeGuardian({ policy, nowMs: () => now });
+    const rejected = await g.handleCall(agent, 'af_propose_transfer', transfer(9000));
+    const [p] = await g.listPending();
+    await g.reject(p!.reservationId, p!.nonce);
+    expect(await g.handleCall(agent, 'af_propose_transfer', transfer(9000))).toEqual({
+      ok: true,
+      result: { state: 'failed', transferRef: ref(rejected), reasonCode: null },
+    });
+    const expired = await g.handleCall(agent, 'af_propose_transfer', transfer(9500));
+    now += 16 * 60_000;
+    expect(await g.handleCall(agent, 'af_propose_transfer', transfer(9500))).toEqual({
+      ok: true,
+      result: { state: 'failed', transferRef: ref(expired), reasonCode: 'APPROVAL_EXPIRED' },
+    });
+  });
+
+  it('does not remember denied requests, so a fixed retry is evaluated afresh', async () => {
+    const g = createFakeGuardian({ policy });
+    const call = { ...transfer(6000), payeeId: 'landlord', idempotencyKey: 'retry-me-1' };
+    await g.updatePolicy({ ...policy, transfers: { ...policy.transfers, allow: false } }, 1);
+    expect(await g.handleCall(agent, 'af_propose_transfer', call)).toMatchObject({ ok: false, error: { code: 'CAPABILITY_DISABLED' } });
+    await g.updatePolicy(policy, 2);
+    expect(await g.handleCall(agent, 'af_propose_transfer', call)).toMatchObject({ ok: true, result: { state: 'succeeded' } });
+  });
+});

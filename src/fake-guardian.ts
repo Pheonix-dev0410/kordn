@@ -25,10 +25,26 @@ import {
 
 const APPROVAL_TTL_MS = 15 * 60_000;
 
+// af_propose_transfer has no rejected or expired state, so a retry of one reports failed with
+// the reason code; the exact state is in af_get_transfer_status. In-progress states report
+// unknown: the outcome isn't known yet.
+const PROPOSE_STATE = {
+  RESERVED: 'unknown',
+  PENDING_APPROVAL: 'pending_approval',
+  APPROVED: 'unknown',
+  DISPATCHING: 'unknown',
+  UNKNOWN: 'unknown',
+  SUCCEEDED: 'succeeded',
+  FAILED: 'failed',
+  REJECTED: 'failed',
+  EXPIRED: 'failed',
+} as const satisfies Record<State, string>;
+
 interface Transfer {
   ref: string;
   agentId: string;
   call: TransferCall;
+  hash: string;
   state: State;
   reasonCode: string | null;
   updatedAt: string;
@@ -46,6 +62,9 @@ export function createFakeGuardian(options: FakeGuardianOptions): Guardian {
   let version = 1;
   const revoked = new Set<string>();
   const transfers = new Map<string, Transfer>();
+  // Design doc §8.4: an idempotency key is scoped to (agent, key). Only reserved transfers are
+  // recorded, so a denied request can be retried once the policy allows it.
+  const byIdempotencyKey = new Map<string, Transfer>();
   const usedNonces = new Set<string>();
   const activity: AuditEvent[] = [];
 
@@ -82,8 +101,23 @@ export function createFakeGuardian(options: FakeGuardianOptions): Guardian {
     }
   }
 
+  /** What af_propose_transfer reports for a transfer, now. */
+  function proposeResult(t: Transfer): CallResult {
+    expire(t);
+    const state = PROPOSE_STATE[t.state];
+    return { ok: true, result: { state, transferRef: t.ref, reasonCode: t.reasonCode } };
+  }
+
   function proposeTransfer(agentId: string, call: TransferCall): CallResult {
     const hash = requestHash(call);
+    const key = `${agentId}\n${call.idempotencyKey}`;
+    const existing = byIdempotencyKey.get(key);
+    if (existing) {
+      // A retry never reserves or executes again; it reports the original transfer.
+      if (existing.hash !== hash) return deny(agentId, call.tool, 'IDEMPOTENCY_CONFLICT', hash);
+      return proposeResult(existing);
+    }
+
     const rules = policy.transfers;
     if (call.resourceId !== policy.resourceId) return deny(agentId, call.tool, 'UNKNOWN_ACTION', hash);
     if (!rules.allow) return deny(agentId, call.tool, 'CAPABILITY_DISABLED', hash);
@@ -91,8 +125,9 @@ export function createFakeGuardian(options: FakeGuardianOptions): Guardian {
     if (call.amountMinor > rules.maxSingleMinor) return deny(agentId, call.tool, 'SINGLE_LIMIT', hash);
 
     const ref = `tr_${token(16)}`;
-    const t: Transfer = { ref, agentId, call, state: 'RESERVED', reasonCode: null, updatedAt: iso() };
+    const t: Transfer = { ref, agentId, call, hash, state: 'RESERVED', reasonCode: null, updatedAt: iso() };
     transfers.set(ref, t);
+    byIdempotencyKey.set(key, t);
 
     if (call.amountMinor > rules.humanApprovalAboveMinor) {
       t.state = 'PENDING_APPROVAL';
@@ -109,13 +144,13 @@ export function createFakeGuardian(options: FakeGuardianOptions): Guardian {
         expiresAt: new Date(now() + APPROVAL_TTL_MS).toISOString(),
       };
       log('policy.require_approval', agentId, { tool: call.tool, requestHash: hash, reservationId: ref });
-      return { ok: true, result: { state: 'pending_approval', transferRef: ref, reasonCode: null } };
+      return proposeResult(t);
     }
 
     t.state = 'SUCCEEDED';
     log('policy.allowed', agentId, { tool: call.tool, requestHash: hash, reservationId: ref });
     log('transfer.succeeded', agentId, { tool: call.tool, requestHash: hash, reservationId: ref });
-    return { ok: true, result: { state: 'succeeded', transferRef: ref, reasonCode: null } };
+    return proposeResult(t);
   }
 
   function settle(reservationId: string, nonce: string, digest: string | null): ApprovalResult {
