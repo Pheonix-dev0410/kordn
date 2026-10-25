@@ -21,6 +21,10 @@ const MAX_BODY_BYTES = 1024 * 1024;
 // destroy the 413 before the client reads it.
 const MAX_DRAIN_BYTES = 64 * 1024 * 1024;
 const DRAIN_MS = 5_000;
+// Refused before auth: read only enough for the client to see the reply, then hang up, so
+// nobody unauthenticated can stream into the server.
+const REFUSED_DRAIN_BYTES = 64 * 1024;
+const REFUSED_DRAIN_MS = 1_000;
 const PATH = '/mcp';
 
 export interface HttpOptions {
@@ -56,13 +60,13 @@ export async function serveHttp(options: HttpOptions): Promise<HttpHandle> {
   });
 
   async function handle(req: IncomingMessage, res: ServerResponse): Promise<void> {
-    if (!validateHostHeader(req.headers.host, hosts).ok) return reply(res, 403, 'host not allowed');
-    if (!validateOriginHeader(req.headers.origin, origins).ok) return reply(res, 403, 'origin not allowed');
+    if (!validateHostHeader(req.headers.host, hosts).ok) return refuse(req, res, 403, 'host not allowed');
+    if (!validateOriginHeader(req.headers.origin, origins).ok) return refuse(req, res, 403, 'origin not allowed');
     if (!authorized(req.headers.authorization, expected)) {
-      return reply(res, 401, 'unauthorized', { 'www-authenticate': 'Bearer realm="kordn"' });
+      return refuse(req, res, 401, 'unauthorized', { 'www-authenticate': 'Bearer realm="kordn"' });
     }
     const url = new URL(req.url ?? '/', 'http://localhost');
-    if (url.pathname !== PATH) return reply(res, 404, 'not found');
+    if (url.pathname !== PATH) return refuse(req, res, 404, 'not found');
 
     if (Number(req.headers['content-length']) > MAX_BODY_BYTES) {
       drain(req);
@@ -130,17 +134,41 @@ function readBody(req: IncomingMessage): Promise<Uint8Array<ArrayBuffer> | null>
   });
 }
 
-/** Discard the rest of a refused body, within bounds, so the connection ends cleanly. */
-function drain(req: IncomingMessage): void {
+/**
+ * Discard the rest of a refused body, within bounds, so the reply isn't lost to a reset.
+ * Past the bounds the socket is cut. With `hangUp`, the connection is also closed once the
+ * body is in, so it can't be reused.
+ */
+function drain(req: IncomingMessage, maxBytes = MAX_DRAIN_BYTES, ms = DRAIN_MS, hangUp = false): void {
   let drained = 0;
   const cut = () => req.socket.destroy();
-  const timer = setTimeout(cut, DRAIN_MS).unref();
+  const timer = setTimeout(cut, ms).unref();
   req.on('data', (chunk: Buffer) => {
     drained += chunk.length;
-    if (drained > MAX_DRAIN_BYTES) cut();
+    if (drained > maxBytes) cut();
+  });
+  req.once('end', () => {
+    clearTimeout(timer);
+    if (hangUp) req.socket.end();
   });
   req.once('close', () => clearTimeout(timer));
   req.resume();
+}
+
+/**
+ * Reply to a request that never gets to the MCP handler and close the connection. Not
+ * `Connection: close`: Node would then destroy the socket with the body unread, and the
+ * resulting reset can wipe out the reply before the client reads it.
+ */
+function refuse(
+  req: IncomingMessage,
+  res: ServerResponse,
+  status: number,
+  message: string,
+  headers: Record<string, string> = {},
+): void {
+  drain(req, REFUSED_DRAIN_BYTES, REFUSED_DRAIN_MS, true);
+  reply(res, status, message, headers);
 }
 
 function toHeaders(req: IncomingMessage): Headers {

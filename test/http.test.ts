@@ -55,6 +55,33 @@ function raw(
   });
 }
 
+/**
+ * Stream up to `total` bytes as a chunked POST, as fast as the server takes them. Resolves
+ * with the response status and how much was written before the server cut the connection.
+ */
+function upload(url: string, headers: Record<string, string>, total: number): Promise<{ status: number; written: number }> {
+  return new Promise((resolve) => {
+    let status = 0;
+    let written = 0;
+    const chunk = Buffer.alloc(64 * 1024, 'x');
+    const req = request(url, { method: 'POST', headers: { 'content-type': 'application/json', ...headers } }, (res) => {
+      status = res.statusCode ?? 0;
+      res.resume();
+    });
+    const done = () => resolve({ status, written });
+    req.on('error', done);
+    req.on('close', done);
+    const next = (): void => {
+      if (req.destroyed) return;
+      if (written >= total) return void req.end();
+      written += chunk.length;
+      if (req.write(chunk)) setImmediate(next);
+      else req.once('drain', next);
+    };
+    next();
+  });
+}
+
 const listTools = JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/list', params: {} });
 const accept = { accept: 'application/json, text/event-stream' };
 
@@ -80,6 +107,17 @@ describe('HTTP transport', () => {
     const res = await raw(url, { ...accept, ...headers }, listTools);
     expect(res.status).toBe(401);
     expect(res.headers['www-authenticate']).toMatch(/^Bearer/);
+  });
+
+  it.each([
+    ['401 without a token', {}, 401],
+    ['403 for a foreign Host', { host: 'evil.example' }, 403],
+  ])('cuts off an unauthenticated upload after its %s', async (_name, headers, code) => {
+    const { url } = await start();
+    const { status, written } = await upload(url, headers, 256 * 1024 * 1024);
+    expect(status).toBe(code);
+    // Kernel buffers absorb some data after the server stops reading; 256 MiB would mean it never did.
+    expect(written).toBeLessThan(32 * 1024 * 1024);
   });
 
   it('answers 404 off /mcp, even with the token', async () => {
