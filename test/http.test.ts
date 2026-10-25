@@ -28,15 +28,30 @@ async function start(options: { allowedHosts?: string[] } = {}) {
   return { ...http, guardian };
 }
 
-/** Raw request so tests can set Host, which fetch won't let us override. */
-function raw(url: string, headers: Record<string, string>, body = '{}'): Promise<{ status: number; headers: Record<string, unknown> }> {
+/**
+ * Raw request so tests can set Host, which fetch won't let us override. A string body is
+ * sent with Content-Length; an array is sent chunk by chunk with chunked encoding.
+ */
+function raw(
+  url: string,
+  headers: Record<string, string>,
+  body: string | string[] = '{}',
+): Promise<{ status: number; headers: Record<string, unknown> }> {
   return new Promise((resolve, reject) => {
     const req = request(url, { method: 'POST', headers: { 'content-type': 'application/json', ...headers } }, (res) => {
       res.resume();
       res.on('end', () => resolve({ status: res.statusCode ?? 0, headers: res.headers }));
     });
     req.on('error', reject);
-    req.end(body);
+    if (typeof body === 'string') return req.end(body);
+    const chunks = [...body];
+    const next = (): void => {
+      const chunk = chunks.shift();
+      if (chunk === undefined || req.destroyed) return void req.end();
+      if (req.write(chunk)) setImmediate(next);
+      else req.once('drain', next);
+    };
+    next();
   });
 }
 
@@ -93,9 +108,20 @@ describe('HTTP transport', () => {
     expect(res.status).toBe(200);
   });
 
-  it('answers 413 to an oversized body', async () => {
+  it.each([2, 8])('answers 413, not a connection reset, to a %i MiB body with Content-Length', async (mib) => {
     const { url } = await start();
-    const res = await raw(url, { ...accept, authorization: `Bearer ${TOKEN}` }, 'x'.repeat(2 * 1024 * 1024));
+    const body = 'x'.repeat(mib * 1024 * 1024);
+    // A reset only shows up some of the time, so try a few.
+    for (let i = 0; i < 8; i++) {
+      const res = await fetch(url, { method: 'POST', headers: { ...accept, authorization: `Bearer ${TOKEN}` }, body });
+      expect(res.status).toBe(413);
+    }
+  });
+
+  it('answers 413 to an oversized chunked body', async () => {
+    const { url } = await start();
+    const chunks = Array.from({ length: 128 }, () => 'x'.repeat(64 * 1024));
+    const res = await raw(url, { ...accept, authorization: `Bearer ${TOKEN}` }, chunks);
     expect(res.status).toBe(413);
   });
 

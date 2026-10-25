@@ -16,6 +16,11 @@ import {
 
 export const MIN_TOKEN_LENGTH = 32;
 const MAX_BODY_BYTES = 1024 * 1024;
+// After a 413, keep reading (and discarding) this much of the body before cutting the
+// connection. Closing a socket with unread data makes the kernel send a RST, which can
+// destroy the 413 before the client reads it.
+const MAX_DRAIN_BYTES = 64 * 1024 * 1024;
+const DRAIN_MS = 5_000;
 const PATH = '/mcp';
 
 export interface HttpOptions {
@@ -59,6 +64,10 @@ export async function serveHttp(options: HttpOptions): Promise<HttpHandle> {
     const url = new URL(req.url ?? '/', 'http://localhost');
     if (url.pathname !== PATH) return reply(res, 404, 'not found');
 
+    if (Number(req.headers['content-length']) > MAX_BODY_BYTES) {
+      drain(req);
+      return reply(res, 413, 'request too large');
+    }
     const body = req.method === 'POST' ? await readBody(req) : undefined;
     if (body === null) return reply(res, 413, 'request too large');
 
@@ -104,16 +113,34 @@ function authorized(header: string | undefined, expected: Buffer): boolean {
   return match?.[1] !== undefined && timingSafeEqual(digest(match[1]), expected);
 }
 
-/** Null when the body is over the limit. */
-async function readBody(req: IncomingMessage): Promise<Uint8Array<ArrayBuffer> | null> {
-  const chunks: Buffer[] = [];
-  let size = 0;
-  for await (const chunk of req as AsyncIterable<Buffer>) {
-    size += chunk.length;
-    if (size > MAX_BODY_BYTES) return null;
-    chunks.push(chunk);
-  }
-  return new Uint8Array(Buffer.concat(chunks));
+/** Null as soon as the body goes over the limit; the rest is drained in the background. */
+function readBody(req: IncomingMessage): Promise<Uint8Array<ArrayBuffer> | null> {
+  return new Promise((resolve, reject) => {
+    const chunks: Buffer[] = [];
+    let size = 0;
+    const onData = (chunk: Buffer) => {
+      size += chunk.length;
+      if (size <= MAX_BODY_BYTES) return void chunks.push(chunk);
+      req.off('data', onData).off('end', onEnd);
+      drain(req);
+      resolve(null);
+    };
+    const onEnd = () => resolve(new Uint8Array(Buffer.concat(chunks)));
+    req.on('data', onData).once('end', onEnd).once('error', reject);
+  });
+}
+
+/** Discard the rest of a refused body, within bounds, so the connection ends cleanly. */
+function drain(req: IncomingMessage): void {
+  let drained = 0;
+  const cut = () => req.socket.destroy();
+  const timer = setTimeout(cut, DRAIN_MS).unref();
+  req.on('data', (chunk: Buffer) => {
+    drained += chunk.length;
+    if (drained > MAX_DRAIN_BYTES) cut();
+  });
+  req.once('close', () => clearTimeout(timer));
+  req.resume();
 }
 
 function toHeaders(req: IncomingMessage): Headers {
