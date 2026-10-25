@@ -1,0 +1,105 @@
+# Contain mode
+
+In Contain mode the agent runs inside a locked-down container. Its only way out is the kordn
+guardian socket. This is the setup the claims in [threat-model.md](threat-model.md) apply to.
+It is Linux only. Design doc §9.
+
+```
+host                                         container (untrusted)
+guardian ── /tmp/kordn-XXXX/guardian.sock ── /run/kordn.sock ── kordn --guardian ── agent (MCP over stdio)
+admin UI, policy DB (never mounted)           no network, read-only, no capabilities
+```
+
+## The image
+
+`sandbox/Dockerfile` is a multi-stage build:
+
+- **build** (`node:24-slim`, pinned by digest): `npm ci`, then `npm run build`.
+- **deps** (same base): `npm ci --omit=dev`.
+- **runtime** (`gcr.io/distroless/nodejs24-debian13:nonroot`, pinned by digest): only `dist/`, production `node_modules`, `package.json` and `sandbox/agent.mjs`. Everything is root-owned. The image has no shell, no npm and no package manager, and runs as user `65532` (`nonroot`).
+
+Build it from the repo root:
+
+```sh
+docker build -f sandbox/Dockerfile -t kordn-sandbox .
+```
+
+The build context is filtered by `sandbox/Dockerfile.dockerignore`. BuildKit uses the ignore
+file next to the Dockerfile. It is an allowlist: only `package.json`, `package-lock.json`,
+`tsconfig.json`, `src/` and `sandbox/agent.mjs` go in, and `.env*`, `.envrc`, `.git`,
+`node_modules`, `*.sqlite*`, `.npmrc`, `*.pem` and `*.key` are excluded even inside those paths.
+
+To update a base image, `docker pull` it and replace the `@sha256:` digest in the Dockerfile.
+
+### The agent
+
+v0.1 has no live model. The default command is `sandbox/agent.mjs`, a scripted MCP client. It:
+
+1. starts `node /app/dist/index.js --guardian /run/kordn.sock` (kordn) over stdio;
+2. lists the tools;
+3. calls `af_get_balance`.
+
+It prints one JSON line per step. To run a different agent, pass another script as the
+command, for example `docker run … kordn-sandbox /app/sandbox/other-agent.mjs`. The entrypoint
+is `/nodejs/bin/node`.
+
+## Run flags
+
+`kordn contain` launches the container with these flags (`hardenedRunFlags` in `src/sandbox.ts`):
+
+| Flag | Why |
+|---|---|
+| `--network none` | No interface besides loopback, so there's no route to the bank, the admin UI or the internet |
+| `--read-only` | The root filesystem can't be changed |
+| `--tmpfs /tmp:rw,nosuid,nodev,noexec,size=64m` | The only writable scratch space. It's in memory and disappears with the container |
+| `--cap-drop ALL` | No Linux capabilities, including the bounding set |
+| `--security-opt no-new-privileges` | setuid binaries and file capabilities can't raise privileges |
+| `--pids-limit 64 --memory 512m --memory-swap 512m --cpus 1` | Resource limits. No swap on top of the memory limit |
+| `--user <uid>:<gid>` | Non-root (see below) |
+| `--mount type=bind,src=<socket>,dst=/run/kordn.sock,readonly` | The guardian socket is the only host path in the container |
+
+Nothing else is passed: no `-e` variables, no other mounts or devices, and no `--privileged`
+or `--pid/--ipc/--uts host`. The launcher refuses socket paths containing `,` or `"`, because
+those could add `--mount` options.
+
+## Socket access
+
+The guardian socket lives in a fresh private directory (`mkdtemp`, mode `0700`) owned by the
+user running kordn. No other host user can reach it, whatever the socket's own mode.
+
+- **Rootful Docker:** container uids are host uids. The container runs as the launching user (`--user $(id -u):$(id -g)`) and the socket is `0600`. kordn refuses to run the sandbox as root (uid or gid 0).
+- **Rootless Docker:** container root *is* the launching user, and every other container uid maps to a subordinate id that can't own host files. The container runs as the image user `65532:65532` and the socket is `0666`. It stays private because the `0700` directory is only traversable by the launching user. The bind mount is resolved by the rootless daemon, which runs as that user.
+
+  **The rootless path is unverified:** the development host runs rootful Docker. It is implemented and unit-tested, but it hasn't been run end-to-end against a rootless daemon.
+
+## Verifying the image
+
+These tests need Docker and are skipped by plain `npm test`:
+
+```sh
+KORDN_DOCKER_TESTS=1 npx vitest run test/sandbox-image.test.ts
+```
+
+They build the image (tagged `kordn-test-*`, removed afterwards) and check:
+
+- **Contents:** `/app` holds only `dist`, `node_modules` (only `zod`), `package.json` and `sandbox/agent.mjs`. There is no shell or npm, and the user is `65532`.
+- **No secrets:** `scanImage` (`src/image-scan.ts`) reads every layer of `docker save`, so a file deleted in a later layer is still found, along with the image env, labels and `docker history`. It flags:
+  - env, credential, key, VCS and database files by name;
+  - private keys and common API token formats by content;
+  - secret-named `NAME=value` entries in env, labels and history.
+
+  A planted-secret image proves it catches them.
+- **Build context:** a context full of junk (`.env`, `.git`, `node_modules`, `*.sqlite`, `dist`, `docs`, `test`, worktrees) passes only the allowlisted files.
+- **Inside the hardened container**, against `serveGuardianSocket` and the fake guardian on the host:
+  - a guardian call through `/run/kordn.sock` works;
+  - only `lo` exists and there are no routes;
+  - connects to public IPv4/IPv6, the Docker gateway, 169.254.169.254 and the host's LAN addresses all fail with `ENETUNREACH`;
+  - a listener on the host's `127.0.0.1` is never reached;
+  - `/var/run/docker.sock`, the host home directory and `$SSH_AUTH_SOCK` are absent, and the env has no `SSH_AUTH_SOCK`;
+  - the only non-Docker mount is the socket;
+  - writes give `EROFS`;
+  - all capability sets are empty, with `NoNewPrivs: 1` and `Seccomp: 2`;
+  - the pids and memory limits are in force.
+- **Agent end-to-end:** the agent lists tools and makes a read call through kordn. This test is skipped until the MCP server (`dist/index.js`, #9) is in the image.
+
+The scanner is a heuristic. It catches obvious mistakes but can't prove that no secrets are present.
