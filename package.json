@@ -5,11 +5,14 @@
   "description": "A firewall for AI agents: enforces spending and access limits on MCP tool calls, outside the model.",
   "license": "Apache-2.0",
   "type": "module",
+  "bin": {
+    "kordn": "dist/index.js"
+  },
   "engines": {
     "node": ">=24"
   },
   "scripts": {
-    "build": "tsc",
+    "build": "tsc && node -e \"require('node:fs').chmodSync('dist/index.js', 0o755)\"",
     "typecheck": "tsc --noEmit",
     "test": "vitest run"
   },
