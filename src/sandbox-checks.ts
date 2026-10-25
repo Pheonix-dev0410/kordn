@@ -1,6 +1,5 @@
 import { z } from 'zod';
-import { SANDBOX_SOCKET } from './sandbox.js';
-import type { ProbeParams, ProbeResult } from './sandbox-probe.js';
+import { type ProbeParams, type ProbeResult, SANDBOX_SOCKET } from './sandbox-probe.js';
 
 // Launcher checks for Contain mode (design doc §9.3). Pure functions over `docker info`,
 // `docker inspect` and the in-container probe, so every unsafe setting can be tested

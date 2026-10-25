@@ -6,6 +6,9 @@ import { z } from 'zod';
 // Its output comes from inside the untrusted boundary: parse it strictly and treat any
 // missing or odd field as a failed check.
 
+/** Where the guardian socket appears inside the container. */
+export const SANDBOX_SOCKET = '/run/kordn.sock';
+
 export interface ProbeParams {
   /** Socket path inside the container. Connect only, unless `call` is given. */
   socketPath: string;
