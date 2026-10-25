@@ -195,67 +195,78 @@ export function createFakeGuardian(options: FakeGuardianOptions): Guardian {
     return { ok: true };
   }
 
+  function handle(agentId: string, tool: unknown, args: unknown): CallResult {
+    const name = ToolName.safeParse(tool);
+    const toolName = name.success ? name.data : null;
+    // One guardian serves one agent. Anyone else is unknown, never governed by this policy.
+    // Logged under our own agent so the event stays a valid AuditEvent; the caller's id is
+    // kept, truncated, as data.
+    if (agentId !== policy.agentId) {
+      log('policy.denied', policy.agentId, {
+        tool: toolName,
+        reasonCode: 'UNKNOWN_ACTION',
+        metadata: { unknownAgent: String(agentId).slice(0, 64) },
+      });
+      return { ok: false, error: { code: 'UNKNOWN_ACTION', message: 'UNKNOWN_ACTION' } };
+    }
+    if (revoked.has(agentId)) return deny(agentId, toolName, 'SESSION_REVOKED');
+    if (!toolName) {
+      log('action.attempted', agentId, { metadata: { tool: typeof tool === 'string' ? tool.slice(0, 64) : null } });
+      return deny(agentId, null, 'UNKNOWN_ACTION');
+    }
+    const call = parseToolCall(toolName, args);
+    if (!call) return deny(agentId, toolName, 'INVALID_ARGUMENTS');
+    log('action.attempted', agentId, { tool: call.tool, requestHash: requestHash(call) });
+
+    switch (call.tool) {
+      case 'af_get_balance':
+        if (call.resourceId !== policy.resourceId) return deny(agentId, call.tool, 'UNKNOWN_ACTION');
+        if (!policy.reads.allow) return deny(agentId, call.tool, 'CAPABILITY_DISABLED');
+        log('read.executed', agentId, { tool: call.tool });
+        return {
+          ok: true,
+          result: { currency: 'USD', balanceMinor: CHECKING_ACCOUNT.openingBalanceMinor, observedAt: iso() },
+        };
+      case 'af_list_transactions': {
+        if (call.resourceId !== policy.resourceId) return deny(agentId, call.tool, 'UNKNOWN_ACTION');
+        if (!policy.reads.allow) return deny(agentId, call.tool, 'CAPABILITY_DISABLED');
+        // Denied rather than clamped, like any other out-of-policy argument. Measured from the
+        // mock bank's "today" (the fixture epoch), which its transaction dates are relative to.
+        const oldest = new Date(FIXTURE_EPOCH_MS - policy.reads.maxLookbackDays * 86_400_000).toISOString().slice(0, 10);
+        if (call.fromDate < oldest) return deny(agentId, call.tool, 'INVALID_ARGUMENTS');
+        const transactions =TRANSACTIONS.filter((tx) => transactionDate(tx, FIXTURE_EPOCH_MS) >= call.fromDate)
+          .slice(0, Math.min(call.limit, policy.reads.maxRowsPerCall))
+          .map((tx) => ({
+            transactionId: tx.transactionId,
+            amountMinor: tx.amountMinor,
+            currency: 'USD' as const,
+            date: transactionDate(tx, FIXTURE_EPOCH_MS),
+            // Unlabelled until src/untrusted.ts (#10) lands.
+            description: { text: tx.description, trust: 'external_untrusted' as const, riskSignals: [] },
+          }));
+        log('read.executed', agentId, { tool: call.tool });
+        return { ok: true, result: { transactions } };
+      }
+      case 'af_propose_transfer':
+        return proposeTransfer(agentId, call);
+      case 'af_get_transfer_status': {
+        const t = transfers.get(call.transferRef);
+        if (!t || t.agentId !== agentId) return deny(agentId, call.tool, 'INVALID_ARGUMENTS');
+        expire(t);
+        return { ok: true, result: { state: t.state, reasonCode: t.reasonCode, updatedAt: t.updatedAt } };
+      }
+    }
+  }
+
   return {
     async handleCall(agentId, tool, args) {
-      const name = ToolName.safeParse(tool);
-      const toolName = name.success ? name.data : null;
-      // One guardian serves one agent. Anyone else is unknown, never governed by this policy.
-      // Logged under our own agent so the event stays a valid AuditEvent; the caller's id is
-      // kept, truncated, as data.
-      if (agentId !== policy.agentId) {
-        log('policy.denied', policy.agentId, {
-          tool: toolName,
-          reasonCode: 'UNKNOWN_ACTION',
-          metadata: { unknownAgent: String(agentId).slice(0, 64) },
-        });
-        return { ok: false, error: { code: 'UNKNOWN_ACTION', message: 'UNKNOWN_ACTION' } };
-      }
-      if (revoked.has(agentId)) return deny(agentId, toolName, 'SESSION_REVOKED');
-      if (!toolName) {
-        log('action.attempted', agentId, { metadata: { tool: typeof tool === 'string' ? tool.slice(0, 64) : null } });
-        return deny(agentId, null, 'UNKNOWN_ACTION');
-      }
-      const call = parseToolCall(toolName, args);
-      if (!call) return deny(agentId, toolName, 'INVALID_ARGUMENTS');
-      log('action.attempted', agentId, { tool: call.tool, requestHash: requestHash(call) });
-
-      switch (call.tool) {
-        case 'af_get_balance':
-          if (call.resourceId !== policy.resourceId) return deny(agentId, call.tool, 'UNKNOWN_ACTION');
-          if (!policy.reads.allow) return deny(agentId, call.tool, 'CAPABILITY_DISABLED');
-          log('read.executed', agentId, { tool: call.tool });
-          return {
-            ok: true,
-            result: { currency: 'USD', balanceMinor: CHECKING_ACCOUNT.openingBalanceMinor, observedAt: iso() },
-          };
-        case 'af_list_transactions': {
-          if (call.resourceId !== policy.resourceId) return deny(agentId, call.tool, 'UNKNOWN_ACTION');
-          if (!policy.reads.allow) return deny(agentId, call.tool, 'CAPABILITY_DISABLED');
-          // Denied rather than clamped, like any other out-of-policy argument. Measured from the
-          // mock bank's "today" (the fixture epoch), which its transaction dates are relative to.
-          const oldest = new Date(FIXTURE_EPOCH_MS - policy.reads.maxLookbackDays * 86_400_000).toISOString().slice(0, 10);
-          if (call.fromDate < oldest) return deny(agentId, call.tool, 'INVALID_ARGUMENTS');
-          const transactions =TRANSACTIONS.filter((tx) => transactionDate(tx, FIXTURE_EPOCH_MS) >= call.fromDate)
-            .slice(0, Math.min(call.limit, policy.reads.maxRowsPerCall))
-            .map((tx) => ({
-              transactionId: tx.transactionId,
-              amountMinor: tx.amountMinor,
-              currency: 'USD' as const,
-              date: transactionDate(tx, FIXTURE_EPOCH_MS),
-              // Unlabelled until src/untrusted.ts (#10) lands.
-              description: { text: tx.description, trust: 'external_untrusted' as const, riskSignals: [] },
-            }));
-          log('read.executed', agentId, { tool: call.tool });
-          return { ok: true, result: { transactions } };
-        }
-        case 'af_propose_transfer':
-          return proposeTransfer(agentId, call);
-        case 'af_get_transfer_status': {
-          const t = transfers.get(call.transferRef);
-          if (!t || t.agentId !== agentId) return deny(agentId, call.tool, 'INVALID_ARGUMENTS');
-          expire(t);
-          return { ok: true, result: { state: t.state, reasonCode: t.reasonCode, updatedAt: t.updatedAt } };
-        }
+      // Args are untrusted values, not just JSON: a getter or Proxy can throw mid-check.
+      // The contract is to deny, never reject.
+      try {
+        return handle(agentId, tool, args);
+      } catch {
+        log('policy.denied', policy.agentId, { reasonCode: 'INTERNAL_UNAVAILABLE' });
+        return { ok: false, error: { code: 'INTERNAL_UNAVAILABLE', message: 'INTERNAL_UNAVAILABLE' } };
       }
     },
 

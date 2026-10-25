@@ -385,3 +385,36 @@ describe('fake guardian: output contract', () => {
     expect(states).toEqual(['succeeded', 'rejected', 'expired', 'SUCCEEDED', 'REJECTED', 'EXPIRED']);
   });
 });
+
+describe('fake guardian: never rejects', () => {
+  const throwing = {
+    get resourceId(): string {
+      throw new Error('boom');
+    },
+  };
+  const proxy = new Proxy(
+    {},
+    {
+      ownKeys() {
+        throw new Error('boom');
+      },
+    },
+  );
+  const badId = {
+    toString() {
+      throw new Error('boom');
+    },
+  };
+
+  it.each([
+    ['a throwing getter', agent, throwing],
+    ['a hostile Proxy', agent, proxy],
+    ['an agent id that throws when stringified', badId, {}],
+  ])('resolves INTERNAL_UNAVAILABLE for %s', async (_, caller, args) => {
+    const g = createFakeGuardian({ policy });
+    await expect(g.handleCall(caller as string, 'af_get_balance', args)).resolves.toEqual({
+      ok: false,
+      error: { code: 'INTERNAL_UNAVAILABLE', message: 'INTERNAL_UNAVAILABLE' },
+    });
+  });
+});
