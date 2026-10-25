@@ -102,7 +102,7 @@ They build the image (tagged `kordn-test-*`, removed afterwards) and check:
   - only `lo` exists and there are no routes;
   - connects to public IPv4/IPv6, the Docker gateway, 169.254.169.254 and the host's LAN addresses all fail with `ENETUNREACH`;
   - a listener on the host's `127.0.0.1` is never reached;
-  - `/var/run/docker.sock`, the host home directory and `$SSH_AUTH_SOCK` are absent, and the env has no `SSH_AUTH_SOCK`;
+  - the daemon socket (the default paths, the one named by `DOCKER_HOST` or the docker context, and the rootless `$XDG_RUNTIME_DIR/docker.sock`), the host home directory and `$SSH_AUTH_SOCK` are absent; there is no `/dev/shm`, and the env has no `SSH_AUTH_SOCK`;
   - the only non-Docker mount is the socket;
   - writes give `EROFS`;
   - all capability sets are empty, with `NoNewPrivs: 1` and `Seccomp: 2`;
@@ -110,3 +110,15 @@ They build the image (tagged `kordn-test-*`, removed afterwards) and check:
 - **Agent end-to-end:** the agent lists tools and makes a read call through kordn. This test is skipped until the MCP server (`dist/index.js`, #9) is in the image.
 
 The scanner is a heuristic. It catches obvious mistakes but can't prove that no secrets are present.
+
+### What the probe can and can't prove
+
+The probe runs on the image's own `node` binary (`docker exec … /nodejs/bin/node -`). It is
+evidence from inside the boundary, not an authority: a tampered image could ship a `node` that
+prints a forged result. `docker inspect` facts come from the daemon and the loopback canary counts
+connections on the host side, and neither depends on the probe. Most checks need both the
+daemon's configuration and the probe to agree, so a forged probe can't pass them on its own.
+The exceptions rest on the probe alone: reaching the guardian socket, and the admin UI port and
+guardian DB path being out of reach. For those, the host-side canary is the only independent
+signal, and it only covers host loopback. Build the image yourself from this repo, and run it by
+digest (which `kordn contain` does) so a re-tagged image can't be swapped in.
