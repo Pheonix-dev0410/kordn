@@ -1,7 +1,7 @@
 import { execFile } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
 import { chmodSync, mkdtempSync, readlinkSync, rmSync } from 'node:fs';
-import { type AddressInfo, createServer, type Server } from 'node:net';
+import { type AddressInfo, createServer, type Server, type Socket } from 'node:net';
 import { homedir, networkInterfaces, tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { z } from 'zod';
@@ -278,11 +278,56 @@ export function formatReport(report: ContainReport): string {
   return `${lines.join('\n')}\n`;
 }
 
-const IMAGE_CONFIG = z.object({
-  Entrypoint: z.array(z.string()).nullable(),
-  Cmd: z.array(z.string()).nullable(),
-  Env: z.array(z.string()).nullable(),
+const IMAGE = z.object({
+  Id: z.string().regex(/^sha256:[0-9a-f]{64}$/),
+  Config: z.object({
+    Entrypoint: z.array(z.string()).nullable(),
+    Cmd: z.array(z.string()).nullable(),
+    Env: z.array(z.string()).nullable(),
+  }),
 });
+
+/** A plain image reference or ID: no leading '-', no spaces or shell-ish characters. */
+const IMAGE_REF = /^[A-Za-z0-9][A-Za-z0-9._/:@-]{0,511}$/;
+
+/** Label carrying the launcher's pid, so containers orphaned by a killed launcher can be reaped. */
+export const CONTAIN_LABEL = 'kordn.contain';
+
+function processAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (e) {
+    // EPERM: it exists but belongs to someone else.
+    return (e as NodeJS.ErrnoException).code === 'EPERM';
+  }
+}
+
+/** From `docker ps --format '{{.ID}} {{.Label "kordn.contain"}}'`: containers whose launcher is gone. */
+export function staleContainers(ps: string, isAlive: (pid: number) => boolean): string[] {
+  return ps
+    .split('\n')
+    .map((line) => /^([0-9a-f]+) ([0-9]+)$/.exec(line.trim()))
+    .filter((m): m is RegExpExecArray => m !== null && !isAlive(Number(m[2])))
+    .map((m) => m[1] ?? '');
+}
+
+/**
+ * Removes sandbox containers left behind by a launcher that died before its cleanup ran (for
+ * example SIGKILL). Returns the IDs removed.
+ */
+export async function reapStaleContainers(o: { docker?: string; isAlive?: (pid: number) => boolean } = {}): Promise<string[]> {
+  const docker = o.docker ?? 'docker';
+  const ps = await dockerOk(docker, ['ps', '--all', '--no-trunc', '--filter', `label=${CONTAIN_LABEL}`, '--format', `{{.ID}} {{.Label "${CONTAIN_LABEL}"}}`]);
+  const stale = staleContainers(ps, o.isAlive ?? processAlive);
+  for (const id of stale) await removeContainer(docker, id);
+  return stale;
+}
+
+async function removeContainer(docker: string, id: string): Promise<void> {
+  const r = await runDocker(docker, ['rm', '--force', id]).catch((e: Error) => ({ code: -1, stderr: e.message }));
+  if (r.code !== 0) process.emitWarning(`kordn contain: could not remove container ${id}: ${r.stderr.trim()}`);
+}
 
 export async function runContain(o: ContainOptions): Promise<ContainResult> {
   const platform = o.platform ?? process.platform;
@@ -292,6 +337,7 @@ export async function runContain(o: ContainOptions): Promise<ContainResult> {
   const docker = o.docker ?? 'docker';
   const name = o.name ?? `kordn-sandbox-${randomBytes(4).toString('hex')}`;
   if (!/^[A-Za-z0-9][A-Za-z0-9_.-]{0,62}$/.test(name)) throw new Error(`invalid container name ${JSON.stringify(name)}`);
+  if (!IMAGE_REF.test(o.image)) throw new Error(`invalid image reference ${JSON.stringify(o.image)}`);
 
   let securityOptions: unknown;
   try {
@@ -301,29 +347,40 @@ export async function runContain(o: ContainOptions): Promise<ContainResult> {
   }
   const info = { SecurityOptions: securityOptions };
   const rootless = Array.isArray(securityOptions) && securityOptions.includes('name=rootless');
-  const image = IMAGE_CONFIG.parse(JSON.parse(await dockerOk(docker, ['image', 'inspect', '--format', '{{json .Config}}', o.image])));
-  const entrypoint = image.Entrypoint ?? [];
+  // Resolve the tag once and run that exact image, so a re-tag in between can't swap it.
+  const image = IMAGE.parse(JSON.parse(await dockerOk(docker, ['image', 'inspect', '--format', '{{json .}}', '--', o.image])));
+  const entrypoint = image.Config.Entrypoint ?? [];
   if (entrypoint.length === 0) throw new Error(`image ${o.image} has no entrypoint (expected the node binary)`);
-  const agentCommand = o.agentCommand ?? [...entrypoint, ...(image.Cmd ?? [])];
+  const agentCommand = o.agentCommand ?? [...entrypoint, ...(image.Config.Cmd ?? [])];
 
-  // The finally below force-removes the container by name, so it must be one we create.
   if ((await runDocker(docker, ['inspect', '--type', 'container', name])).code === 0) {
     throw new Error(`container name ${name} is already in use`);
   }
 
   const user = sandboxUser({ rootless, uid: process.getuid?.() ?? 0, gid: process.getgid?.() ?? 0 });
+  const session = randomBytes(8).toString('hex');
   // mkdtemp makes the directory 0700: only this user can reach the socket inside.
   const dir = mkdtempSync(join(tmpdir(), `${name}-`));
   const socketPath = join(dir, 'guardian.sock');
+  const connections = new Set<Socket>();
   let server: Server | undefined;
   let canary: Canary | undefined;
+  let id: string | undefined;
   try {
     const flags = hardenedRunFlags({ socketPath, user });
     server = await serveGuardianSocket(o.guardian, o.agentId, socketPath);
+    server.on('connection', (s: Socket) => {
+      connections.add(s);
+      s.on('close', () => connections.delete(s));
+    });
     chmodSync(socketPath, socketFileMode(rootless));
     canary = await startCanary();
 
-    await dockerOk(docker, ['run', '--detach', '--name', name, ...flags, o.image, '-e', IDLE_SCRIPT]);
+    const labels = ['--label', `${CONTAIN_LABEL}=${process.pid}`, '--label', `${CONTAIN_LABEL}.session=${session}`];
+    const started = (await dockerOk(docker, ['run', '--detach', '--name', name, ...labels, ...flags, image.Id, '-e', IDLE_SCRIPT])).trim();
+    if (!/^[0-9a-f]{64}$/.test(started)) throw new Error(`docker run printed an unexpected container ID: ${JSON.stringify(started.slice(0, 80))}`);
+    id = started;
+
     const expectations: IsolationExpectations = {
       socketPath,
       idleCommand: [...entrypoint, '-e', IDLE_SCRIPT],
@@ -333,20 +390,27 @@ export async function runContain(o: ContainOptions): Promise<ContainResult> {
       adminPort: o.adminPort,
       dbPath: o.dbPath,
       hostAddresses: hostAddresses(),
-      imageEnv: image.Env ?? [],
+      imageEnv: image.Config.Env ?? [],
       hostNamespaces: launcherNamespaces(),
       dockerSockets: await hostDockerSocketPaths(docker),
     };
-    const result = await checkContainer({ docker, container: name, info, expectations, canary });
+    const result = await checkContainer({ docker, container: id, info, expectations, canary });
     const report: ContainReport = { ...result, platform };
     (o.onReport ?? ((r) => process.stderr.write(formatReport(r))))(report);
     if (report.mode !== 'contain' && o.requireContain) return { report, agent: null };
 
-    const run = await runDocker(docker, ['exec', '-i', name, ...agentCommand], { timeoutMs: o.agentTimeoutMs ?? 600_000 });
+    const run = await runDocker(docker, ['exec', '-i', id, ...agentCommand], { timeoutMs: o.agentTimeoutMs ?? 600_000 });
     const killed = run.code === -1;
     return { report, agent: { exitCode: killed ? null : run.code, stdout: run.stdout, stderr: run.stderr } };
   } finally {
-    await runDocker(docker, ['rm', '--force', name]).catch(() => undefined);
+    if (id) await removeContainer(docker, id);
+    else {
+      // docker run failed after creating the container: find it by this session's label only.
+      const ps = await runDocker(docker, ['ps', '--all', '--quiet', '--no-trunc', '--filter', `label=${CONTAIN_LABEL}.session=${session}`]).catch(() => null);
+      for (const leftover of ps?.stdout.split('\n').filter(Boolean) ?? []) await removeContainer(docker, leftover);
+    }
+    // An agent that never hangs up would otherwise keep server.close() waiting forever.
+    for (const s of connections) s.destroy();
     await canary?.close();
     await new Promise((resolve) => (server ? server.close(resolve) : resolve(undefined)));
     rmSync(dir, { recursive: true, force: true });

@@ -5,7 +5,7 @@ import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import policyJson from '../examples/policy.json' with { type: 'json' };
 import { createFakeGuardian } from '../src/fake-guardian.js';
-import { formatReport, runContain, startCanary } from '../src/sandbox.js';
+import { formatReport, runContain, staleContainers, startCanary } from '../src/sandbox.js';
 import { CHECK_IDS } from '../src/sandbox-checks.js';
 import { Policy } from '../src/schema.js';
 
@@ -94,5 +94,72 @@ describe('runContain with a fake docker CLI', () => {
       delete process.env.FAKE_DOCKER_LOG;
       rmSync(dir, { recursive: true, force: true });
     }
+  });
+});
+
+describe('runContain lifecycle (fake docker CLI)', () => {
+  const fakeDocker = join(import.meta.dirname, 'fixtures/fake-docker.mjs');
+  const containerId = 'c'.repeat(64);
+
+  async function withFakeDocker<T>(env: Record<string, string>, fn: (calls: () => string[][]) => Promise<T>): Promise<T> {
+    const dir = mkdtempSync(join(tmpdir(), 'kordn-test-'));
+    const log = join(dir, 'docker.log');
+    Object.assign(process.env, { FAKE_DOCKER_LOG: log, ...env });
+    try {
+      return await fn(() => readFileSync(log, 'utf8').split('\n').filter(Boolean).map((l) => JSON.parse(l)));
+    } finally {
+      for (const k of ['FAKE_DOCKER_LOG', ...Object.keys(env)]) delete process.env[k];
+      rmSync(dir, { recursive: true, force: true });
+    }
+  }
+
+  it('runs the image by its resolved ID, labels the container, then uses the container ID, and never hangs on an open connection', async () => {
+    await withFakeDocker({ FAKE_DOCKER_MODE: 'flow' }, async (calls) => {
+      const result = await runContain({ ...base, guardian: guardian(), platform: 'linux', docker: fakeDocker, name: 'kordn-test-flow' });
+      expect(result.report.mode).toBe('guard');
+      expect(result.agent).toEqual({ exitCode: 0, stdout: 'agent ran\n', stderr: '' });
+
+      const log = calls();
+      const run = log.find((c) => c[0] === 'run') ?? [];
+      expect(run).toContain(`sha256:${'a'.repeat(64)}`);
+      expect(run).not.toContain('kordn-sandbox');
+      expect(run).toEqual(expect.arrayContaining(['--label', `kordn.contain=${process.pid}`]));
+      expect(run.some((a) => /^kordn\.contain\.session=[0-9a-f]{16}$/.test(a))).toBe(true);
+
+      const after = log.slice(log.indexOf(run) + 1).filter((c) => ['inspect', 'exec', 'rm'].includes(c[0] ?? ''));
+      expect(after.map((c) => c[0])).toEqual(['inspect', 'exec', 'exec', 'rm']);
+      for (const c of after) {
+        expect(c).toContain(containerId);
+        expect(c).not.toContain('kordn-test-flow');
+      }
+    });
+  });
+
+  it('warns when the container cannot be removed', async () => {
+    await withFakeDocker({ FAKE_DOCKER_MODE: 'flow', FAKE_DOCKER_RM_FAIL: '1' }, async () => {
+      const warnings: string[] = [];
+      const onWarning = (w: Error) => warnings.push(w.message);
+      process.on('warning', onWarning);
+      try {
+        await runContain({ ...base, guardian: guardian(), platform: 'linux', docker: fakeDocker, name: 'kordn-test-rmfail' });
+        await new Promise((r) => setImmediate(r));
+      } finally {
+        process.off('warning', onWarning);
+      }
+      expect(warnings).toEqual([expect.stringMatching(/could not remove container c{64}.*removal failed/)]);
+    });
+  });
+
+  it('rejects an image reference that could be read as a flag or is not a plain reference', async () => {
+    for (const image of ['-v', '--privileged', '', 'a b', 'kordn\nsandbox', '../x', 'x;rm']) {
+      await expect(runContain({ ...base, guardian: guardian(), platform: 'linux', image })).rejects.toThrow(/invalid image reference/);
+    }
+  });
+});
+
+describe('staleContainers', () => {
+  it('picks containers whose launching process is gone, and leaves unknown labels alone', () => {
+    const ps = 'aaa 100\nbbb 200\nccc notapid\nddd\n';
+    expect(staleContainers(ps, (pid) => pid === 100)).toEqual(['bbb']);
   });
 });
