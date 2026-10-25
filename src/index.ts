@@ -73,9 +73,26 @@ function parse(argv: string[]): Options {
     guardian: values.guardian,
     http: values.http,
     port,
-    allowedHosts: values['allowed-host'] ?? [],
+    allowedHosts: (values['allowed-host'] ?? []).map(allowedHost),
     help: values.help,
   };
+}
+
+/**
+ * Host checks compare the Host header's hostname, so a value with a port, scheme or path,
+ * or an unbracketed IPv6 address, could never match. Refuse it rather than ignore it.
+ */
+function allowedHost(value: string): string {
+  let hostname: string | undefined;
+  try {
+    hostname = new URL(`http://${value}`).hostname;
+  } catch {
+    hostname = undefined;
+  }
+  if (value === '' || hostname !== value.toLowerCase()) {
+    throw new UsageError('--allowed-host takes a bare hostname, e.g. kordn.example.net or [::1]');
+  }
+  return hostname;
 }
 
 function loadPolicy(path: string | URL): Policy {

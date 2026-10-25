@@ -108,6 +108,11 @@ describe('kordn CLI', () => {
     [['--http', '--port', '70000']],
     [['--guardian', '/tmp/x.sock', '--policy', 'p.json']],
     [['extra']],
+    [['--http', '--allowed-host', 'kordn.example.net:443']],
+    [['--http', '--allowed-host', 'https://kordn.example.net']],
+    [['--http', '--allowed-host', 'kordn.example.net/mcp']],
+    [['--http', '--allowed-host', '::1']],
+    [['--http', '--allowed-host', '']],
   ])('rejects bad arguments %j', async (args) => {
     const { code, stderr } = await run(args, { KORDN_TOKEN: 'x'.repeat(32) });
     expect(code).toBe(2);
