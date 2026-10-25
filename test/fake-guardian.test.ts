@@ -1,0 +1,101 @@
+import { describe, expect, it } from 'vitest';
+import policyJson from '../examples/policy.json' with { type: 'json' };
+import { createFakeGuardian } from '../src/fake-guardian.js';
+import { Policy } from '../src/schema.js';
+
+const policy = Policy.parse(policyJson);
+const agent = policy.agentId;
+const transfer = (amountMinor: number, payeeId = 'utilities') => ({
+  resourceId: 'mock-bank:checking-01',
+  payeeId,
+  amountMinor,
+  currency: 'USD',
+  idempotencyKey: `key-${amountMinor}-${payeeId}`,
+});
+
+describe('fake guardian', () => {
+  it('denies unknown tools and extra fields', async () => {
+    const g = createFakeGuardian({ policy });
+    expect(await g.handleCall(agent, 'shell', {})).toMatchObject({ ok: false, error: { code: 'UNKNOWN_ACTION' } });
+    expect(await g.handleCall(agent, 'af_propose_transfer', { ...transfer(100), policyApproved: true })).toMatchObject({
+      ok: false,
+      error: { code: 'INVALID_ARGUMENTS' },
+    });
+    expect((await g.listActivity({ events: ['policy.denied'] })).map((e) => e.reasonCode)).toEqual([
+      'INVALID_ARGUMENTS',
+      'UNKNOWN_ACTION',
+    ]);
+  });
+
+  it('applies payee, single limit and approval threshold', async () => {
+    const g = createFakeGuardian({ policy });
+    const result = async (amount: number, payee?: string) => g.handleCall(agent, 'af_propose_transfer', transfer(amount, payee));
+    expect(await result(7500)).toMatchObject({ ok: true, result: { state: 'succeeded' } });
+    expect(await result(7501)).toMatchObject({ ok: true, result: { state: 'pending_approval' } });
+    expect(await result(10001)).toMatchObject({ ok: false, error: { code: 'SINGLE_LIMIT' } });
+    expect(await result(100, 'attacker')).toMatchObject({ ok: false, error: { code: 'UNAPPROVED_PAYEE' } });
+  });
+
+  it('approves once, with the right digest and nonce', async () => {
+    const g = createFakeGuardian({ policy });
+    await g.handleCall(agent, 'af_propose_transfer', transfer(9000));
+    const [p] = await g.listPending();
+    expect(await g.approve(p!.reservationId, 'sha256:' + '0'.repeat(64), p!.nonce)).toEqual({ ok: false, code: 'STALE_DIGEST' });
+    expect(await g.approve(p!.reservationId, p!.digest, 'wrong')).toEqual({ ok: false, code: 'BAD_NONCE' });
+    expect(await g.approve(p!.reservationId, p!.digest, p!.nonce)).toEqual({ ok: true });
+    expect(await g.approve(p!.reservationId, p!.digest, p!.nonce)).toEqual({ ok: false, code: 'NOT_PENDING' });
+    expect(await g.listPending()).toEqual([]);
+  });
+
+  it('re-checks limits on approval and rejects if they now fail', async () => {
+    const g = createFakeGuardian({ policy });
+    await g.handleCall(agent, 'af_propose_transfer', transfer(9000));
+    const [p] = await g.listPending();
+    await g.updatePolicy({ ...policy, transfers: { ...policy.transfers, maxSingleMinor: 8000 } }, 1);
+    expect(await g.approve(p!.reservationId, p!.digest, p!.nonce)).toEqual({ ok: false, code: 'SINGLE_LIMIT' });
+    expect(await g.listPending()).toEqual([]);
+  });
+
+  it('expires approvals', async () => {
+    let now = Date.UTC(2026, 9, 25);
+    const g = createFakeGuardian({ policy, nowMs: () => now });
+    await g.handleCall(agent, 'af_propose_transfer', transfer(9000));
+    const [p] = await g.listPending();
+    now += 16 * 60_000;
+    expect(await g.approve(p!.reservationId, p!.digest, p!.nonce)).toEqual({ ok: false, code: 'APPROVAL_EXPIRED' });
+  });
+
+  it('revoke denies new calls and rejects pending approvals', async () => {
+    const g = createFakeGuardian({ policy });
+    await g.handleCall(agent, 'af_propose_transfer', transfer(9000));
+    const [p] = await g.listPending();
+    await g.revoke(agent);
+    expect(await g.isRevoked(agent)).toBe(true);
+    expect(await g.listPending()).toEqual([]);
+    expect(await g.approve(p!.reservationId, p!.digest, p!.nonce)).toMatchObject({ ok: false });
+    expect(await g.handleCall(agent, 'af_get_balance', { resourceId: policy.resourceId })).toMatchObject({
+      ok: false,
+      error: { code: 'SESSION_REVOKED' },
+    });
+  });
+
+  it('versions policy updates and rejects invalid ones', async () => {
+    const g = createFakeGuardian({ policy });
+    const tighter = { ...policy, transfers: { ...policy.transfers, maxSingleMinor: 5000 } };
+    expect(await g.updatePolicy(tighter, 2)).toEqual({ ok: false, code: 'VERSION_CONFLICT' });
+    expect(await g.updatePolicy({ ...tighter, extra: 1 }, 1)).toEqual({ ok: false, code: 'INVALID_POLICY' });
+    expect(await g.updatePolicy(tighter, 1)).toEqual({ ok: true, version: 2 });
+    expect(await g.handleCall(agent, 'af_propose_transfer', transfer(6000))).toMatchObject({
+      ok: false,
+      error: { code: 'SINGLE_LIMIT' },
+    });
+  });
+
+  it('returns memos as untrusted text', async () => {
+    const g = createFakeGuardian({ policy });
+    const r = await g.handleCall(agent, 'af_list_transactions', { resourceId: policy.resourceId, fromDate: '2026-09-25', limit: 20 });
+    expect(r.ok && (r.result as { transactions: { description: { trust: string } }[] }).transactions[0]?.description.trust).toBe(
+      'external_untrusted',
+    );
+  });
+});
