@@ -124,3 +124,106 @@ signal, and it only covers host loopback. Build the image yourself from this rep
 its local image ID (`sha256:…`, which `kordn contain` resolves from the tag before starting),
 so a re-tagged image can't be swapped in. The ID comes from this daemon's local image store; it
 is not a registry digest, which a locally built image doesn't have.
+
+## `kordn contain`: launch and verify
+
+`runContain(options)` in `src/sandbox.ts` is what the `kordn contain` command runs (the CLI
+wiring lives with the MCP server, #9). It:
+
+1. **Refuses on anything but Linux**, macOS included, with "Contain mode is not supported on <platform>". Use Guard mode there.
+2. **Starts the guardian on the host.** It makes a private `0700` directory and calls `serveGuardianSocket(guardian, agentId, socket)`. The agent's identity is bound to that socket, never taken from the agent.
+3. **Launches the container idle** with the hardened flags above. PID 1 is `node -e 'setInterval(…)'`, so nothing untrusted runs yet.
+4. **Runs the isolation checks** below, using `docker inspect` for configuration and a probe piped into `docker exec … node -` for runtime facts. A host-side canary listener on `127.0.0.1` stands in for the admin UI.
+5. **Prints the coverage report** through `onReport` (by default to stderr), then **runs the agent** with `docker exec` in that same container. The default agent is the image's command; `agentCommand` replaces it.
+6. **Cleans up** in all cases: it removes the container, closes the socket and the canary, and deletes the directory. It refuses to start if the container name is already taken, so it never removes a container it didn't create.
+
+The mode is **Contain only if every check passes**. Any failure means **Guard**: kordn still
+checks every tool call, but the agent isn't contained. The report lists each failing check and
+the reason. In Guard mode the agent still runs, labelled Guard. Pass `requireContain: true` to
+refuse to run it instead.
+
+```ts
+const { report, agent } = await runContain({
+  guardian,                 // the Guardian (the fake for now, the real one after #6)
+  agentId: 'sandbox-demo-01',
+  image: 'kordn-sandbox',
+  adminPort: 3333,          // optional: the admin UI port that must be unreachable
+  dbPath: '/home/me/.kordn/kordn.sqlite', // optional: must not be visible inside
+  requireContain: false,
+});
+```
+
+```
+kordn contain: GUARD mode (linux, image sha256:…)
+  FAIL  rootless                 Docker daemon is rootful (no name=rootless in docker info): container root is host root
+  ok    network                  no network: only lo, no routes, 7 outside addresses unreachable
+  ok    readOnlyRootfs           root filesystem is read-only (writes fail with EROFS); /tmp is a noexec tmpfs
+  …
+1 isolation check failed. Running in Guard mode: kordn still checks every call, but the agent is not contained.
+```
+
+### The checks
+
+Each check passes only if the container's **configuration** (`docker inspect` / `docker info`)
+and the **runtime evidence** from inside agree. If the probe produces no output or anything it
+can't parse, every runtime-backed check fails. So does a target the probe didn't report on.
+
+| Check | Configuration | Runtime (inside the container) |
+|---|---|---|
+| `rootless` | `docker info` security options include `name=rootless` | n/a |
+| `network` | network mode `none`, no other networks attached | only `lo`; no IPv4 routes; IPv6 routes only on `lo`; connects to public IPv4/IPv6, the Docker gateway, 169.254.169.254 and every host address fail with `ENETUNREACH`/`EHOSTUNREACH` |
+| `readOnlyRootfs` | `--read-only`; the only tmpfs is `/tmp` with `nosuid,nodev,noexec` | `/` mounted `ro`; writes in `/`, `/etc`, `/usr`, `/var`, `/app`, `/run` fail with **`EROFS`**. `EACCES` doesn't count: it's also what a *writable* root gives a non-root user |
+| `onlyGuardianSocket` | exactly one mount: the socket, read-only bind, from the expected host path; no devices | `/var/run/docker.sock`, `/run/docker.sock`, the host home dir and `$SSH_AUTH_SOCK` don't exist; every mount point is one Docker always creates (checked by filesystem type and source), or the socket |
+| `noHostEnv` | no variables beyond the image's own | no variable names beyond the image's, `HOSTNAME` and `HOME` (values are never read) |
+| `nonRoot` | numeric non-zero uid (and gid) | uid ≠ 0, gid ≠ 0, not in group 0 |
+| `capabilities` | `--cap-drop ALL`, nothing added, not privileged | all five capability sets are zero, including the bounding set |
+| `noNewPrivileges` | `no-new-privileges` set | `NoNewPrivs: 1` |
+| `seccomp` | not `seccomp=unconfined`, not privileged | `Seccomp: 2` (filter active) |
+| `namespaces` | pid, ipc, uts, user and cgroup namespaces not `host` or shared with another container | PID 1 is the sandbox's own idle process |
+| `resourceLimits` | pids ≤ 64, memory ≤ 512m, swap = memory (no extra), cpus ≤ 1 | `pids.max` and `memory.max` set within those limits |
+| `hostServicesUnreachable` | n/a | the canary and the admin UI port on `127.0.0.1` and `::1` can't be reached, and the host-side canary saw no connections; the guardian DB path, if given, doesn't exist |
+| `guardianSocket` | n/a | `/run/kordn.sock` accepts a connection (no request is sent, so this uses no quota) |
+
+The check logic is pure (`evaluateIsolation` in `src/sandbox-checks.ts`) and unit-tested
+against a fixture captured from a real hardened container, mutated into each unsafe setting.
+
+### What real Contain needs
+
+On a rootful Docker daemon `kordn contain` reports **Guard**, and that's correct: if anything
+breaks out of the container, it is root on the host. For Contain:
+
+1. Run Docker in [rootless mode](https://docs.docker.com/engine/security/rootless/) as the user who runs kordn: `dockerd-rootless-setuptool.sh install`, then `export DOCKER_HOST=unix://$XDG_RUNTIME_DIR/docker.sock`. Use cgroup v2 with delegation, otherwise the pids and memory limits can't be enforced and `resourceLimits` fails.
+2. Build the image under that daemon (`docker build -f sandbox/Dockerfile -t kordn-sandbox .`).
+3. Run `kordn contain`. Every check must say `ok`.
+
+Under rootless Docker the container runs as `65532:65532` and the socket is `0666` inside the
+private `0700` directory (see [Socket access](#socket-access)). **This path hasn't been verified
+against a real rootless daemon yet.** Rootless runtimes can also differ in their default mounts
+(for example how `/sys` is provided). If `onlyGuardianSocket` reports an unexpected mount there,
+that's the check failing closed and needs a look. It doesn't mean the sandbox is unsafe.
+
+### Tests
+
+```sh
+npm test                                                     # pure checks, probe, runner (no Docker)
+KORDN_DOCKER_TESTS=1 npx vitest run test/contain-docker.test.ts
+```
+
+The Docker test runs `runContain` end to end. It also actually launches each unsafe variant and
+asserts which checks fail:
+
+- bridge network
+- host network (the host canary is reached)
+- writable rootfs (non-root writes get `EACCES`)
+- `docker.sock` mounted
+- a home dir mounted
+- root user (it also can't open the socket: no `CAP_DAC_OVERRIDE`)
+- no cap-drop
+- no no-new-privileges
+- `seccomp=unconfined`
+- `--pid host`
+- `--ipc host`
+- no resource limits
+- `-e` variables
+- a forwarded SSH agent
+- a uid that can't open the `0600` socket
