@@ -1,6 +1,6 @@
 import { execFile } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
-import { chmodSync, mkdtempSync, readlinkSync, rmSync } from 'node:fs';
+import { chmodSync, mkdtempSync, readFileSync, readlinkSync, rmSync } from 'node:fs';
 import { type AddressInfo, createServer, type Server, type Socket } from 'node:net';
 import { homedir, networkInterfaces, tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -139,6 +139,7 @@ export interface ContainOptions {
   /** For tests. */
   platform?: NodeJS.Platform;
   docker?: string;
+  runTimeoutMs?: number;
 }
 
 export interface ContainReport extends IsolationResult {
@@ -290,38 +291,93 @@ const IMAGE = z.object({
 /** A plain image reference or ID: no leading '-', no spaces or shell-ish characters. */
 const IMAGE_REF = /^[A-Za-z0-9][A-Za-z0-9._/:@-]{0,511}$/;
 
-/** Label carrying the launcher's pid, so containers orphaned by a killed launcher can be reaped. */
+/**
+ * Labels naming the launcher, so containers orphaned by a killed launcher can be reaped: its pid,
+ * and the host boot id, PID-namespace inode and process start time that make the pid unambiguous.
+ */
 export const CONTAIN_LABEL = 'kordn.contain';
+const IDENTITY_LABELS = ['', '.boot', '.pidns', '.start'].map((s) => `${CONTAIN_LABEL}${s}`);
 
-function processAlive(pid: number): boolean {
+export interface LauncherIdentity {
+  pid: number;
+  /** /proc/sys/kernel/random/boot_id: changes on every boot, differs between hosts. */
+  boot: string;
+  /** Inode of /proc/self/ns/pid: pids mean something only within one PID namespace. */
+  pidns: string;
+  /** Start time of the process in clock ticks since boot (/proc/<pid>/stat field 22). */
+  start: string;
+}
+
+/** Start time of a process, null if there is no such process, undefined if it exists but can't be read. */
+export function processStart(pid: number): string | null | undefined {
   try {
-    process.kill(pid, 0);
-    return true;
-  } catch (e) {
-    // EPERM: it exists but belongs to someone else.
-    return (e as NodeJS.ErrnoException).code === 'EPERM';
+    const stat = readFileSync(`/proc/${pid}/stat`, 'utf8');
+    // The command name (field 2) is in parentheses and may contain spaces.
+    const fields = stat.slice(stat.lastIndexOf(')') + 2).split(' ');
+    return fields[19];
+  } catch {
+    try {
+      process.kill(pid, 0);
+      return undefined;
+    } catch (e) {
+      // EPERM: it exists but belongs to someone else (e.g. hidden by hidepid).
+      return (e as NodeJS.ErrnoException).code === 'EPERM' ? undefined : null;
+    }
   }
 }
 
-/** From `docker ps --format '{{.ID}} {{.Label "kordn.contain"}}'`: containers whose launcher is gone. */
-export function staleContainers(ps: string, isAlive: (pid: number) => boolean): string[] {
-  return ps
-    .split('\n')
-    .map((line) => /^([0-9a-f]+) ([0-9]+)$/.exec(line.trim()))
-    .filter((m): m is RegExpExecArray => m !== null && !isAlive(Number(m[2])))
-    .map((m) => m[1] ?? '');
+export function launcherIdentity(): LauncherIdentity {
+  return {
+    pid: process.pid,
+    boot: readFileSync('/proc/sys/kernel/random/boot_id', 'utf8').trim(),
+    pidns: /\[([0-9]+)\]/.exec(readlinkSync('/proc/self/ns/pid'))?.[1] ?? '',
+    start: processStart(process.pid) ?? '',
+  };
+}
+
+function identityLabels(me: LauncherIdentity): string[] {
+  return [me.pid, me.boot, me.pidns, me.start].flatMap((v, i) => ['--label', `${IDENTITY_LABELS[i]}=${v}`]);
 }
 
 /**
- * Removes sandbox containers left behind by a launcher that died before its cleanup ran (for
- * example SIGKILL). Returns the IDs removed.
+ * From `docker ps` lines of "<id> <pid> <boot> <pidns> <start>": containers this host and PID
+ * namespace launched whose launcher is gone (no such pid, or the pid now belongs to a process
+ * started at another time). Anything else, including a launcher whose start time can't be read,
+ * is left alone: a reaper elsewhere must never remove a live session.
  */
-export async function reapStaleContainers(o: { docker?: string; isAlive?: (pid: number) => boolean } = {}): Promise<string[]> {
+export function staleContainers(
+  ps: string,
+  self: { boot: string; pidns: string },
+  startOf: (pid: number) => string | null | undefined,
+): string[] {
+  const stale: string[] = [];
+  for (const line of ps.split('\n')) {
+    const m = /^([0-9a-f]+) ([0-9]+) (\S+) ([0-9]+) ([0-9]+)$/.exec(line.trim());
+    if (!m || m[3] !== self.boot || m[4] !== self.pidns) continue;
+    const start = startOf(Number(m[2]));
+    if (start === null || (start !== undefined && start !== m[5])) stale.push(m[1] ?? '');
+  }
+  return stale;
+}
+
+/**
+ * Removes sandbox containers left behind by a launcher on this host that died before its cleanup
+ * ran (for example SIGKILL). Returns the IDs removed.
+ */
+export async function reapStaleContainers(o: { docker?: string } = {}): Promise<string[]> {
   const docker = o.docker ?? 'docker';
-  const ps = await dockerOk(docker, ['ps', '--all', '--no-trunc', '--filter', `label=${CONTAIN_LABEL}`, '--format', `{{.ID}} {{.Label "${CONTAIN_LABEL}"}}`]);
-  const stale = staleContainers(ps, o.isAlive ?? processAlive);
+  const format = ['{{.ID}}', ...IDENTITY_LABELS.map((l) => `{{.Label "${l}"}}`)].join(' ');
+  const ps = await dockerOk(docker, ['ps', '--all', '--no-trunc', '--filter', `label=${CONTAIN_LABEL}`, '--format', format]);
+  const stale = staleContainers(ps, launcherIdentity(), processStart);
   for (const id of stale) await removeContainer(docker, id);
   return stale;
+}
+
+const LATE_SWEEP_MS = 1000;
+
+async function sweepSession(docker: string, session: string): Promise<void> {
+  const ps = await runDocker(docker, ['ps', '--all', '--quiet', '--no-trunc', '--filter', `label=${CONTAIN_LABEL}.session=${session}`]).catch(() => null);
+  for (const leftover of ps?.stdout.split('\n').filter(Boolean) ?? []) await removeContainer(docker, leftover);
 }
 
 async function removeContainer(docker: string, id: string): Promise<void> {
@@ -372,6 +428,7 @@ export async function runContain(o: ContainOptions): Promise<ContainResult> {
   let server: Server | undefined;
   let canary: Canary | undefined;
   let id: string | undefined;
+  let runTimedOut = false;
   try {
     const flags = hardenedRunFlags({ socketPath, user });
     server = await serveGuardianSocket(o.guardian, o.agentId, socketPath);
@@ -382,8 +439,16 @@ export async function runContain(o: ContainOptions): Promise<ContainResult> {
     chmodSync(socketPath, socketFileMode(rootless));
     canary = await startCanary();
 
-    const labels = ['--label', `${CONTAIN_LABEL}=${process.pid}`, '--label', `${CONTAIN_LABEL}.session=${session}`];
-    const started = (await dockerOk(docker, ['run', '--detach', '--name', name, ...labels, ...flags, image.Id, '-e', IDLE_SCRIPT])).trim();
+    const labels = [...identityLabels(launcherIdentity()), '--label', `${CONTAIN_LABEL}.session=${session}`];
+    const created = await runDocker(docker, ['run', '--detach', '--name', name, ...labels, ...flags, image.Id, '-e', IDLE_SCRIPT], {
+      timeoutMs: o.runTimeoutMs ?? 120_000,
+    });
+    if (created.code === -1) {
+      runTimedOut = true;
+      throw new Error('docker run timed out');
+    }
+    if (created.code !== 0) throw new Error(`docker run failed (${created.code}): ${created.stderr.trim()}`);
+    const started = created.stdout.trim();
     if (!/^[0-9a-f]{64}$/.test(started)) throw new Error(`docker run printed an unexpected container ID: ${JSON.stringify(started.slice(0, 80))}`);
     id = started;
 
@@ -412,8 +477,12 @@ export async function runContain(o: ContainOptions): Promise<ContainResult> {
     if (id) await removeContainer(docker, id);
     else {
       // docker run failed after creating the container: find it by this session's label only.
-      const ps = await runDocker(docker, ['ps', '--all', '--quiet', '--no-trunc', '--filter', `label=${CONTAIN_LABEL}.session=${session}`]).catch(() => null);
-      for (const leftover of ps?.stdout.split('\n').filter(Boolean) ?? []) await removeContainer(docker, leftover);
+      await sweepSession(docker, session);
+      // After a timeout the daemon may still be creating it: look once more a little later.
+      if (runTimedOut) {
+        await new Promise((r) => setTimeout(r, LATE_SWEEP_MS));
+        await sweepSession(docker, session);
+      }
     }
     // An agent that never hangs up would otherwise keep server.close() waiting forever.
     for (const s of connections) s.destroy();

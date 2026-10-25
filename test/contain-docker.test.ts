@@ -15,6 +15,7 @@ import {
   hostAddresses,
   hostDockerSocketPaths,
   IDLE_SCRIPT,
+  launcherIdentity,
   launcherNamespaces,
   reapStaleContainers,
   runContain,
@@ -245,22 +246,30 @@ describe.skipIf(!DOCKER_TESTS)('kordn contain (Docker)', () => {
       }
     }, 120_000);
 
-    it('reapStaleContainers removes sandboxes whose launcher is gone, and only those', async () => {
+    it('reapStaleContainers removes sandboxes whose launcher on this host is gone, and only those', async () => {
       // A pid that just exited stands in for a launcher killed before its cleanup ran.
-      const deadPid = spawnSync(process.execPath, ['-e', '']).pid;
-      const orphan = testName('orphan');
-      const live = testName('live');
-      for (const [name, pid] of [[orphan, deadPid], [live, process.pid]] as const) {
-        await dockerOk(['run', '--detach', '--name', name, '--label', `kordn.contain=${pid}`, '--network', 'none', image, '-e', IDLE_SCRIPT]);
+      const deadPid = spawnSync(process.execPath, ['-e', '']).pid ?? 0;
+      const me = launcherIdentity();
+      const labels = (pid: number, boot: string, start: string) =>
+        [['', pid], ['.boot', boot], ['.pidns', me.pidns], ['.start', start]].flatMap(([k, v]) => ['--label', `kordn.contain${k}=${v}`]);
+      const containers = {
+        orphan: { name: testName('orphan'), labels: labels(deadPid, me.boot, '1') },
+        live: { name: testName('live'), labels: labels(me.pid, me.boot, me.start) },
+        // Same dead pid, but launched on another host (or before a reboot): not ours to judge.
+        foreign: { name: testName('foreign'), labels: labels(deadPid, 'another-boot-id', '1') },
+      };
+      for (const c of Object.values(containers)) {
+        await dockerOk(['run', '--detach', '--name', c.name, ...c.labels, '--network', 'none', image, '-e', IDLE_SCRIPT]);
       }
       try {
         const reaped = await reapStaleContainers();
-        const orphanId = (await docker(['inspect', '--type', 'container', '--format', '{{.Id}}', orphan])).stdout.trim();
-        expect(orphanId).toBe('');
+        const exists = async (name: string) => (await docker(['inspect', '--type', 'container', name])).code === 0;
+        expect(await exists(containers.orphan.name)).toBe(false);
+        expect(await exists(containers.live.name)).toBe(true);
+        expect(await exists(containers.foreign.name)).toBe(true);
         expect(reaped.length).toBeGreaterThanOrEqual(1);
-        expect((await docker(['inspect', '--type', 'container', live])).code).toBe(0);
       } finally {
-        await docker(['rm', '--force', orphan, live]);
+        await docker(['rm', '--force', ...Object.values(containers).map((c) => c.name)]);
       }
     }, 120_000);
 

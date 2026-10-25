@@ -133,16 +133,21 @@ wiring lives with the MCP server, #9). It:
 1. **Refuses on anything but Linux**, macOS included, with "Contain mode is not supported on <platform>". Use Guard mode there. It also refuses an image reference that isn't a plain name or ID (for example one starting with `-`).
 2. **Resolves the image to its ID** (`sha256:…`) and runs exactly that image, so a re-tag can't swap it in between.
 3. **Starts the guardian on the host.** It makes a private `0700` directory and calls `serveGuardianSocket(guardian, agentId, socket)`. The agent's identity is bound to that socket, never taken from the agent.
-4. **Launches the container idle** with the hardened flags above, labelled `kordn.contain=<launcher pid>`. PID 1 is `node -e 'setInterval(…)'`, so the agent hasn't started. The probe that runs next uses the image's own `node` (see [What the probe can and can't prove](#what-the-probe-can-and-cant-prove)). Every later call uses the container ID that `docker run` printed, not the name.
+4. **Launches the container idle** with the hardened flags above, labelled with the launcher's identity (see Signals below). PID 1 is `node -e 'setInterval(…)'`, so the agent hasn't started. The probe that runs next uses the image's own `node` (see [What the probe can and can't prove](#what-the-probe-can-and-cant-prove)). Every later call uses the container ID that `docker run` printed, not the name.
 5. **Runs the isolation checks** below, using `docker inspect`/`docker info` for configuration and a probe piped into `docker exec … node -` for runtime facts. A host-side canary listener on `127.0.0.1` stands in for the admin UI.
 6. **Prints the coverage report** through `onReport` (by default to stderr), then **runs the agent** with `docker exec` in that same container. The default agent is the image's command; `agentCommand` replaces it.
 7. **Cleans up** in all cases. It removes the container (with a warning if that fails), drops any open guardian connections so it can't hang, closes the socket and the canary, and deletes the directory. It refuses to start if the container name is already taken, so it never removes a container it didn't create.
 
 **Signals.** Cleanup runs in a `finally`, which a signal skips. The `kordn contain` CLI must
 install `SIGINT`/`SIGTERM` handlers that make `runContain` finish (and await it) before exiting.
-For a launcher that was killed outright (`SIGKILL`), `reapStaleContainers()` removes every
-container labelled `kordn.contain` whose launcher pid no longer exists. Run it before a new
-session.
+For a launcher that was killed outright (`SIGKILL`), `reapStaleContainers()` removes the
+containers it left behind. Each container is labelled with the launcher's pid, the host's boot id,
+the PID-namespace inode and the process start time. A container is removed only if the boot id
+and PID namespace match the reaper's own, and that pid is gone or now belongs to a process
+started at another time. A reaper on another host, in another PID namespace or after a reboot
+leaves it alone, and so does one that can't read the launcher's start time. Run it before a new
+session. If `docker run` itself times out, the launcher looks for its container by a
+per-session label twice, the second time a second later, in case the daemon created it late.
 
 The mode is **Contain only if every check passes**. Any failure means **Guard**: kordn still
 checks every tool call, but the agent isn't contained. The report lists each failing check and

@@ -4,6 +4,7 @@
 //   FAKE_DOCKER_MODE=flow   the name is free; `run` holds a guardian connection open (like an
 //                           agent that never hangs up) and prints a container ID; the probe
 //                           prints garbage (so the report is Guard); the agent prints "agent ran"
+//   FAKE_DOCKER_MODE=slowrun like flow, but `run` hangs past the launcher's timeout
 //   FAKE_DOCKER_RM_FAIL=1   `rm` fails
 import { spawn } from 'node:child_process';
 import { appendFileSync } from 'node:fs';
@@ -30,6 +31,10 @@ switch (args[0]) {
     else process.exit(1);
     break;
   case 'run': {
+    if (mode === 'slowrun') {
+      setTimeout(() => {}, 10_000); // never answers within the launcher's timeout
+      break;
+    }
     const mount = args[args.indexOf('--mount') + 1] ?? '';
     const socket = /src=([^,]+)/.exec(mount)?.[1];
     const holder = spawn(
@@ -46,6 +51,8 @@ switch (args[0]) {
   }
   case 'exec':
     out(args.includes('--input-type=module') ? 'garbage' : 'agent ran\n');
+    break;
+  case 'ps':
     break;
   case 'rm':
     if (process.env.FAKE_DOCKER_RM_FAIL) {

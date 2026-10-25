@@ -1,11 +1,11 @@
-import { mkdtempSync, readdirSync, readFileSync, rmSync } from 'node:fs';
+import { mkdtempSync, readdirSync, readFileSync, readlinkSync, rmSync } from 'node:fs';
 import { connect } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import policyJson from '../examples/policy.json' with { type: 'json' };
 import { createFakeGuardian } from '../src/fake-guardian.js';
-import { formatReport, runContain, staleContainers, startCanary } from '../src/sandbox.js';
+import { formatReport, launcherIdentity, processStart, runContain, staleContainers, startCanary } from '../src/sandbox.js';
 import { CHECK_IDS } from '../src/sandbox-checks.js';
 import { Policy } from '../src/schema.js';
 
@@ -123,7 +123,10 @@ describe('runContain lifecycle (fake docker CLI)', () => {
       const run = log.find((c) => c[0] === 'run') ?? [];
       expect(run).toContain(`sha256:${'a'.repeat(64)}`);
       expect(run).not.toContain('kordn-sandbox');
-      expect(run).toEqual(expect.arrayContaining(['--label', `kordn.contain=${process.pid}`]));
+      const me = launcherIdentity();
+      for (const label of [`kordn.contain=${me.pid}`, `kordn.contain.boot=${me.boot}`, `kordn.contain.pidns=${me.pidns}`, `kordn.contain.start=${me.start}`]) {
+        expect(run).toEqual(expect.arrayContaining(['--label', label]));
+      }
       expect(run.some((a) => /^kordn\.contain\.session=[0-9a-f]{16}$/.test(a))).toBe(true);
 
       const after = log.slice(log.indexOf(run) + 1).filter((c) => ['inspect', 'exec', 'rm'].includes(c[0] ?? ''));
@@ -150,6 +153,16 @@ describe('runContain lifecycle (fake docker CLI)', () => {
     });
   });
 
+  it('after a docker run timeout, sweeps for the session container again once it may have been created', async () => {
+    await withFakeDocker({ FAKE_DOCKER_MODE: 'slowrun' }, async (calls) => {
+      await expect(
+        runContain({ ...base, guardian: guardian(), platform: 'linux', docker: fakeDocker, name: 'kordn-test-slow', runTimeoutMs: 300 }),
+      ).rejects.toThrow(/docker run timed out/);
+      const sweeps = calls().filter((c) => c[0] === 'ps' && c.some((a) => a.startsWith('label=kordn.contain.session=')));
+      expect(sweeps).toHaveLength(2);
+    });
+  });
+
   it('rejects an image reference that could be read as a flag or is not a plain reference', async () => {
     for (const image of ['-v', '--privileged', '', 'a b', 'kordn\nsandbox', '../x', 'x;rm']) {
       await expect(runContain({ ...base, guardian: guardian(), platform: 'linux', image })).rejects.toThrow(/invalid image reference/);
@@ -158,8 +171,38 @@ describe('runContain lifecycle (fake docker CLI)', () => {
 });
 
 describe('staleContainers', () => {
-  it('picks containers whose launching process is gone, and leaves unknown labels alone', () => {
-    const ps = 'aaa 100\nbbb 200\nccc notapid\nddd\n';
-    expect(staleContainers(ps, (pid) => pid === 100)).toEqual(['bbb']);
+  const self = { boot: 'boot-1', pidns: '4026531836' };
+  // Start time per pid. null: no such process. undefined: it exists but its start is unreadable.
+  const starts = new Map<number, string | null | undefined>([
+    [100, '5000'],
+    [300, '7000'],
+    [400, undefined],
+  ]);
+  const startOf = (pid: number) => (starts.has(pid) ? starts.get(pid) : null);
+
+  it('reaps only when this host and PID namespace launched it and that launcher is gone', () => {
+    const ps = [
+      'a1 100 boot-1 4026531836 5000', // launcher alive: keep
+      'b2 200 boot-1 4026531836 6000', // launcher dead: reap
+      'c3 300 boot-1 4026531836 6500', // pid now belongs to another process: reap
+      'd4 200 boot-2 4026531836 6000', // before a reboot, or another host: keep
+      'e5 200 boot-1 4026532000 6000', // another PID namespace: keep
+      'f6 200 boot-1 4026531836', // no start label: keep
+      '07 notapid boot-1 4026531836 1', // garbled: keep
+      '08 400 boot-1 4026531836 1', // alive, start unreadable (hidepid): keep
+    ].join('\n');
+    expect(staleContainers(ps, self, startOf)).toEqual(['b2', 'c3']);
+  });
+});
+
+describe('launcherIdentity', () => {
+  it('reads the boot id, PID namespace inode and start time from /proc', () => {
+    const id = launcherIdentity();
+    expect(id.pid).toBe(process.pid);
+    expect(id.boot).toBe(readFileSync('/proc/sys/kernel/random/boot_id', 'utf8').trim());
+    expect(readlinkSync('/proc/self/ns/pid')).toBe(`pid:[${id.pidns}]`);
+    expect(id.start).toMatch(/^[0-9]+$/);
+    expect(processStart(process.pid)).toBe(id.start);
+    expect(processStart(2 ** 22 + 1)).toBeNull();
   });
 });
