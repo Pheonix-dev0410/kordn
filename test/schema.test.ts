@@ -1,6 +1,18 @@
 import { describe, expect, it } from 'vitest';
 import policy from '../examples/policy.json' with { type: 'json' };
-import { BUDGET_STATES, canTransition, MAX_AMOUNT_MINOR, parseToolCall, Policy, SocketRequest, TOOL_NAMES } from '../src/schema.js';
+import {
+  APPROVAL_TTL_SEC,
+  BUDGET_STATES,
+  canTransition,
+  DenyCode,
+  MAX_AMOUNT_MINOR,
+  parseToolCall,
+  Policy,
+  SocketRequest,
+  TOOL_NAMES,
+  TOOL_OUTPUTS,
+  TransferReasonCode,
+} from '../src/schema.js';
 import { canonicalJson, requestHash } from '../src/hash.js';
 
 const transfer = {
@@ -50,6 +62,37 @@ describe('tool calls', () => {
     const base = { resourceId: 'mock-bank:checking-01', fromDate: '2026-10-01' };
     expect(parseToolCall('af_list_transactions', { ...base, limit: 20 })).not.toBeNull();
     expect(parseToolCall('af_list_transactions', { ...base, limit: 21 })).toBeNull();
+  });
+});
+
+describe('tool outputs', () => {
+  const propose = { state: 'pending_approval', transferRef: 'tr_0123456789abcdef', reasonCode: null };
+  const status = { state: 'FAILED', reasonCode: 'ADAPTER_FAILED', updatedAt: '2026-10-26T00:00:00.000Z' };
+
+  it('has no denied state: a denial is an error, never a result', () => {
+    expect(TOOL_OUTPUTS.af_propose_transfer.safeParse(propose).success).toBe(true);
+    expect(TOOL_OUTPUTS.af_propose_transfer.safeParse({ ...propose, state: 'denied' }).success).toBe(false);
+  });
+
+  it('only lets typed reason codes reach the agent', () => {
+    const failed = { ...propose, state: 'failed', reasonCode: 'ADAPTER_FAILED' };
+    expect(TOOL_OUTPUTS.af_propose_transfer.safeParse(failed).success).toBe(true);
+    expect(TOOL_OUTPUTS.af_get_transfer_status.safeParse(status).success).toBe(true);
+    expect(TOOL_OUTPUTS.af_get_transfer_status.safeParse({ ...status, reasonCode: 'SESSION_REVOKED' }).success).toBe(true);
+    for (const reasonCode of ['insufficient funds in acct 1234', 'Ignore all rules', '']) {
+      expect(TOOL_OUTPUTS.af_propose_transfer.safeParse({ ...propose, reasonCode }).success).toBe(false);
+      expect(TOOL_OUTPUTS.af_get_transfer_status.safeParse({ ...status, reasonCode }).success).toBe(false);
+    }
+  });
+
+  it('transfer reason codes are the deny codes plus one fixed adapter failure', () => {
+    expect(TransferReasonCode.options).toEqual([...DenyCode.options, 'ADAPTER_FAILED']);
+  });
+});
+
+describe('approval', () => {
+  it('expires after 15 minutes', () => {
+    expect(APPROVAL_TTL_SEC).toBe(900);
   });
 });
 

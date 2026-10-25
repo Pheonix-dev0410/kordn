@@ -81,11 +81,19 @@ export const DenyCode = z.enum([
 ]);
 export type DenyCode = z.infer<typeof DenyCode>;
 
+/** Why a transfer ended up where it did, as the agent sees it. Adapter failures all map to ADAPTER_FAILED. */
+export const TransferReasonCode = z.enum([...DenyCode.options, 'ADAPTER_FAILED']);
+export type TransferReasonCode = z.infer<typeof TransferReasonCode>;
+
+/** How long a pending transfer waits for the user before it expires. */
+export const APPROVAL_TTL_SEC = 900;
+
 /** Result of the pure policy check. Reservations are created by the guardian, not here. */
 export type Verdict = { kind: 'deny'; code: DenyCode } | { kind: 'allow' } | { kind: 'require_approval' };
 
 export type AdapterResult =
   | { state: 'succeeded'; receiptId: string }
+  // Free text from the bank side: audit metadata at most, never returned to the agent.
   | { state: 'failed'; reasonCode: string }
   | { state: 'unknown'; correlationId: string };
 
@@ -151,14 +159,15 @@ export const TOOL_OUTPUTS = {
       )
       .max(20),
   }),
+  // A denial is never a result: it is an error carrying a DenyCode (socket ok:false, MCP isError).
   af_propose_transfer: z.strictObject({
-    state: z.enum(['denied', 'pending_approval', 'succeeded', 'failed', 'unknown']),
+    state: z.enum(['pending_approval', 'succeeded', 'failed', 'unknown']),
     transferRef: TransferRef.nullable(),
-    reasonCode: z.string().nullable(),
+    reasonCode: TransferReasonCode.nullable(),
   }),
   af_get_transfer_status: z.strictObject({
     state: State,
-    reasonCode: z.string().nullable(),
+    reasonCode: TransferReasonCode.nullable(),
     updatedAt: z.iso.datetime(),
   }),
 } as const;
