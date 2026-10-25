@@ -18,6 +18,7 @@ import { buildSandboxImage, DOCKER_TESTS, docker, dockerOk, hostUser, leftovers,
 const policy = Policy.parse(policyJson);
 const image = testName('sandbox');
 const leaky = testName('leaky');
+const classic = testName('classic');
 const dirs: string[] = [];
 let probe: ProbeResult | null = null;
 let canaryHits = 0;
@@ -82,7 +83,7 @@ describe.skipIf(!DOCKER_TESTS)('sandbox image (Docker)', () => {
   }, 900_000);
 
   afterAll(async () => {
-    await removeImages(image, leaky);
+    await removeImages(image, leaky, classic);
     for (const d of dirs.splice(0)) rmSync(d, { recursive: true, force: true });
     expect(await leftovers()).toEqual([]);
   }, 120_000);
@@ -119,7 +120,8 @@ describe.skipIf(!DOCKER_TESTS)('sandbox image (Docker)', () => {
     expect(reasons).toEqual(expect.arrayContaining(['app/.env env file', 'app/notes.txt GitHub token', 'env NPM_TOKEN secret-named variable']));
   }, 300_000);
 
-  it('keeps env files, VCS data, databases, deps and other junk out of the build context', async () => {
+  /** A repo-shaped build context full of junk, with both ignore files laid out like the real ones. */
+  function plantContext(): string {
     const ctx = tempDir();
     const files = [
       'package.json',
@@ -142,20 +144,35 @@ describe.skipIf(!DOCKER_TESTS)('sandbox image (Docker)', () => {
       'sandbox/agent.mjs',
       'sandbox/notes.txt',
       '.worktrees/other/src/a.ts',
+      '.worktrees/other/.env',
     ];
     for (const f of files) {
       mkdirSync(join(ctx, f, '..'), { recursive: true });
       writeFileSync(join(ctx, f), 'x');
     }
-    writeFileSync(join(ctx, 'ctx.Dockerfile'), 'FROM scratch\nCOPY . /\n');
-    cpSync(join(ROOT, 'sandbox/Dockerfile.dockerignore'), join(ctx, 'ctx.Dockerfile.dockerignore'));
+    writeFileSync(join(ctx, 'sandbox/ctx.Dockerfile'), 'FROM scratch\nCOPY . /ctx/\n');
+    cpSync(join(ROOT, 'sandbox/Dockerfile.dockerignore'), join(ctx, 'sandbox/ctx.Dockerfile.dockerignore'));
+    cpSync(join(ROOT, '.dockerignore'), join(ctx, '.dockerignore'));
+    return ctx;
+  }
+
+  it('BuildKit: only the allowlisted files enter the build context, root .dockerignore or not', async () => {
+    const ctx = plantContext();
     const out = tempDir();
-    await dockerOk(['build', '-q', '-f', join(ctx, 'ctx.Dockerfile'), '--output', `type=local,dest=${out}`, ctx], undefined, 300_000);
+    await dockerOk(['build', '-q', '-f', join(ctx, 'sandbox/ctx.Dockerfile'), '--output', `type=local,dest=${out}`, ctx], undefined, 300_000);
     const seen = readdirSync(out, { recursive: true, withFileTypes: true })
       .filter((e) => e.isFile())
-      .map((e) => relative(out, join(e.parentPath, e.name)))
+      .map((e) => relative(join(out, 'ctx'), join(e.parentPath, e.name)))
       .sort();
     expect(seen).toEqual(['package-lock.json', 'package.json', 'sandbox/agent.mjs', 'src/index.ts', 'tsconfig.json']);
+  }, 300_000);
+
+  it('classic builder: the root .dockerignore keeps secrets, VCS data and databases out', async () => {
+    const ctx = plantContext();
+    await dockerOk(['build', '-q', '-f', join(ctx, 'sandbox/ctx.Dockerfile'), '-t', classic, ctx], undefined, 300_000, { DOCKER_BUILDKIT: '0' });
+    const scan = await scanImage(classic);
+    expect(scan.entries).toBeGreaterThanOrEqual(5);
+    expect(scan.findings).toEqual([]);
   }, 300_000);
 
   describe('inside the hardened container', () => {

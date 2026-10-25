@@ -17,9 +17,9 @@ export interface Run {
 }
 
 /** Runs docker with an argument array (never a shell string), optionally feeding stdin. */
-export function docker(args: string[], input?: string, timeoutMs = 120_000): Promise<Run> {
+export function docker(args: string[], input?: string, timeoutMs = 120_000, env?: NodeJS.ProcessEnv): Promise<Run> {
   return new Promise((resolve, reject) => {
-    const child = spawn('docker', args, { stdio: ['pipe', 'pipe', 'pipe'] });
+    const child = spawn('docker', args, { stdio: ['pipe', 'pipe', 'pipe'], env: env ? { ...process.env, ...env } : process.env });
     let stdout = '';
     let stderr = '';
     const timer = setTimeout(() => child.kill('SIGKILL'), timeoutMs);
@@ -34,8 +34,8 @@ export function docker(args: string[], input?: string, timeoutMs = 120_000): Pro
   });
 }
 
-export async function dockerOk(args: string[], input?: string, timeoutMs?: number): Promise<string> {
-  const r = await docker(args, input, timeoutMs);
+export async function dockerOk(args: string[], input?: string, timeoutMs?: number, env?: NodeJS.ProcessEnv): Promise<string> {
+  const r = await docker(args, input, timeoutMs, env);
   if (r.code !== 0) throw new Error(`docker ${args.join(' ')} failed (${r.code}): ${r.stderr}`);
   return r.stdout;
 }

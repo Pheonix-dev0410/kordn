@@ -29,6 +29,12 @@ file next to the Dockerfile. It is an allowlist: only `package.json`, `package-l
 `tsconfig.json`, `src/` and `sandbox/agent.mjs` go in, and `.env*`, `.envrc`, `.git`,
 `node_modules`, `*.sqlite*`, `.npmrc`, `*.pem` and `*.key` are excluded even inside those paths.
 
+**BuildKit is required** (it is the default builder since Docker 23). The classic builder
+(`DOCKER_BUILDKIT=0`) ignores the per-Dockerfile file. As a fallback, a root `.dockerignore`
+denies the same secret, VCS, dependency and database entries, plus `.worktrees` and `dist`.
+Under the classic builder the context is then bigger than the allowlist (docs and tests go in),
+but no secrets do. BuildKit never reads the root file for this Dockerfile.
+
 To update a base image, `docker pull` it and replace the `@sha256:` digest in the Dockerfile.
 
 ### The agent
@@ -90,7 +96,7 @@ They build the image (tagged `kordn-test-*`, removed afterwards) and check:
   - secret-named `NAME=value` entries in env, labels and history.
 
   A planted-secret image proves it catches them.
-- **Build context:** a context full of junk (`.env`, `.git`, `node_modules`, `*.sqlite`, `dist`, `docs`, `test`, worktrees) passes only the allowlisted files.
+- **Build context:** a context full of junk (`.env`, `.git`, `node_modules`, `*.sqlite`, `dist`, `docs`, `test`, worktrees), laid out like the repo, passes only the allowlisted files under BuildKit even with the root `.dockerignore` present. Under the classic builder the root file keeps every planted secret out.
 - **Inside the hardened container**, against `serveGuardianSocket` and the fake guardian on the host:
   - a guardian call through `/run/kordn.sock` works;
   - only `lo` exists and there are no routes;

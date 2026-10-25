@@ -1,0 +1,14 @@
+# Fallback for the classic (non-BuildKit) builder, which ignores sandbox/Dockerfile.dockerignore.
+# BuildKit uses that per-Dockerfile allowlist and never reads this file for sandbox/Dockerfile.
+# Keep the deny entries in sync with it.
+**/.env
+**/.env.*
+**/.envrc
+**/.git
+**/node_modules
+**/*.sqlite*
+**/.npmrc
+**/*.pem
+**/*.key
+.worktrees
+dist
