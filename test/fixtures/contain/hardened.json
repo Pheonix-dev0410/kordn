@@ -1,0 +1,663 @@
+{
+  "expectations": {
+    "socketPath": "/tmp/kordn-fixture/guardian.sock",
+    "idleCommand": [
+      "/nodejs/bin/node",
+      "-e",
+      "setInterval(() => {}, 1 << 30)"
+    ],
+    "hostHome": "/home/alice",
+    "canaryPort": 36927,
+    "hostAddresses": [
+      "192.0.2.10",
+      "192.0.2.11"
+    ],
+    "imageEnv": [
+      "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
+      "SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt",
+      "NODE_ENV=production"
+    ]
+  },
+  "info": {
+    "SecurityOptions": [
+      "name=seccomp,profile=builtin",
+      "name=cgroupns"
+    ]
+  },
+  "inspect": {
+    "Id": "df97a5f089aa3c674c1b6f5bad77ed89bf44aabeb80726947e35ef1e4cec4b5d",
+    "Created": "2026-10-25T20:19:18.555036622Z",
+    "Path": "/nodejs/bin/node",
+    "Args": [
+      "-e",
+      "setInterval(() => {}, 1 << 30)"
+    ],
+    "State": {
+      "Status": "running",
+      "Running": true,
+      "Paused": false,
+      "Restarting": false,
+      "OOMKilled": false,
+      "Dead": false,
+      "Pid": 162137,
+      "ExitCode": 0,
+      "Error": "",
+      "StartedAt": "2026-10-25T20:19:18.645328117Z",
+      "FinishedAt": "0001-01-01T00:00:00Z"
+    },
+    "Image": "sha256:51928d282787cf13a924f7f7bb0bb0d4f0d47655a8f4b669fb538fa7559db1f1",
+    "ResolvConfPath": "/var/lib/docker/containers/df97a5f089aa3c674c1b6f5bad77ed89bf44aabeb80726947e35ef1e4cec4b5d/resolv.conf",
+    "HostnamePath": "/var/lib/docker/containers/df97a5f089aa3c674c1b6f5bad77ed89bf44aabeb80726947e35ef1e4cec4b5d/hostname",
+    "HostsPath": "/var/lib/docker/containers/df97a5f089aa3c674c1b6f5bad77ed89bf44aabeb80726947e35ef1e4cec4b5d/hosts",
+    "LogPath": "",
+    "Name": "/kordn-test-fx",
+    "RestartCount": 0,
+    "Driver": "overlayfs",
+    "Platform": "linux",
+    "MountLabel": "",
+    "ProcessLabel": "",
+    "AppArmorProfile": "",
+    "ExecIDs": null,
+    "HostConfig": {
+      "Binds": null,
+      "ContainerIDFile": "",
+      "LogConfig": {
+        "Type": "journald",
+        "Config": {}
+      },
+      "NetworkMode": "none",
+      "PortBindings": {},
+      "RestartPolicy": {
+        "Name": "no",
+        "MaximumRetryCount": 0
+      },
+      "AutoRemove": false,
+      "VolumeDriver": "",
+      "VolumesFrom": null,
+      "ConsoleSize": [
+        0,
+        0
+      ],
+      "CapAdd": null,
+      "CapDrop": [
+        "ALL"
+      ],
+      "CgroupnsMode": "private",
+      "Dns": null,
+      "DnsOptions": [],
+      "DnsSearch": [],
+      "ExtraHosts": null,
+      "GroupAdd": null,
+      "IpcMode": "private",
+      "Cgroup": "",
+      "Links": null,
+      "OomScoreAdj": 0,
+      "PidMode": "",
+      "Privileged": false,
+      "PublishAllPorts": false,
+      "ReadonlyRootfs": true,
+      "SecurityOpt": [
+        "no-new-privileges"
+      ],
+      "Tmpfs": {
+        "/tmp": "rw,nosuid,nodev,noexec,size=64m"
+      },
+      "UTSMode": "",
+      "UsernsMode": "",
+      "ShmSize": 67108864,
+      "Runtime": "runc",
+      "Isolation": "",
+      "CpuShares": 0,
+      "Memory": 536870912,
+      "NanoCpus": 1000000000,
+      "CgroupParent": "",
+      "BlkioWeight": 0,
+      "BlkioWeightDevice": [],
+      "BlkioDeviceReadBps": [],
+      "BlkioDeviceWriteBps": [],
+      "BlkioDeviceReadIOps": [],
+      "BlkioDeviceWriteIOps": [],
+      "CpuPeriod": 0,
+      "CpuQuota": 0,
+      "CpuRealtimePeriod": 0,
+      "CpuRealtimeRuntime": 0,
+      "CpusetCpus": "",
+      "CpusetMems": "",
+      "Devices": [],
+      "DeviceCgroupRules": null,
+      "DeviceRequests": null,
+      "MemoryReservation": 0,
+      "MemorySwap": 536870912,
+      "MemorySwappiness": null,
+      "OomKillDisable": null,
+      "PidsLimit": 64,
+      "Ulimits": null,
+      "CpuCount": 0,
+      "CpuPercent": 0,
+      "IOMaximumIOps": 0,
+      "IOMaximumBandwidth": 0,
+      "Mounts": [
+        {
+          "Type": "bind",
+          "Source": "/tmp/kordn-fixture/guardian.sock",
+          "Target": "/run/kordn.sock",
+          "ReadOnly": true
+        }
+      ],
+      "MaskedPaths": [
+        "/proc/acpi",
+        "/proc/asound",
+        "/proc/interrupts",
+        "/proc/kcore",
+        "/proc/keys",
+        "/proc/latency_stats",
+        "/proc/sched_debug",
+        "/proc/scsi",
+        "/proc/timer_list",
+        "/proc/timer_stats",
+        "/sys/devices/virtual/powercap",
+        "/sys/firmware",
+        "/sys/devices/system/cpu/cpu0/thermal_throttle",
+        "/sys/devices/system/cpu/cpu1/thermal_throttle",
+        "/sys/devices/system/cpu/cpu2/thermal_throttle",
+        "/sys/devices/system/cpu/cpu3/thermal_throttle",
+        "/sys/devices/system/cpu/cpu4/thermal_throttle",
+        "/sys/devices/system/cpu/cpu5/thermal_throttle",
+        "/sys/devices/system/cpu/cpu6/thermal_throttle",
+        "/sys/devices/system/cpu/cpu7/thermal_throttle",
+        "/sys/devices/system/cpu/cpu8/thermal_throttle",
+        "/sys/devices/system/cpu/cpu9/thermal_throttle",
+        "/sys/devices/system/cpu/cpu10/thermal_throttle",
+        "/sys/devices/system/cpu/cpu11/thermal_throttle"
+      ],
+      "ReadonlyPaths": [
+        "/proc/bus",
+        "/proc/fs",
+        "/proc/irq",
+        "/proc/sys",
+        "/proc/sysrq-trigger"
+      ]
+    },
+    "Storage": {
+      "RootFS": {
+        "Snapshot": {
+          "Name": "overlayfs"
+        }
+      }
+    },
+    "Mounts": [
+      {
+        "Type": "bind",
+        "Source": "/tmp/kordn-fixture/guardian.sock",
+        "Destination": "/run/kordn.sock",
+        "Mode": "",
+        "RW": false,
+        "Propagation": "rprivate"
+      }
+    ],
+    "Config": {
+      "Hostname": "df97a5f089aa",
+      "Domainname": "",
+      "User": "1000:100",
+      "AttachStdin": false,
+      "AttachStdout": false,
+      "AttachStderr": false,
+      "Tty": false,
+      "OpenStdin": false,
+      "StdinOnce": false,
+      "Env": [
+        "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
+        "SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt",
+        "NODE_ENV=production"
+      ],
+      "Cmd": [
+        "-e",
+        "setInterval(() => {}, 1 << 30)"
+      ],
+      "Image": "kordn-test-sandbox-fx",
+      "Volumes": null,
+      "WorkingDir": "/app",
+      "Entrypoint": [
+        "/nodejs/bin/node"
+      ],
+      "Labels": {}
+    },
+    "NetworkSettings": {
+      "SandboxID": "9c8515e095e4875c088418e61f451aa747d8b83748ed41e7239316f420b91251",
+      "SandboxKey": "/var/run/docker/netns/9c8515e095e4",
+      "Ports": {},
+      "Networks": {
+        "none": {
+          "IPAMConfig": null,
+          "Links": null,
+          "Aliases": null,
+          "DriverOpts": null,
+          "GwPriority": 0,
+          "NetworkID": "88dc65bc86bf093eb1b4b703e718f0ab4aa985bd32a68e9b0fc5f64c6957f3b9",
+          "EndpointID": "8ef9d14aef37bb6ac0092f366b1af9489e6f5246d8b3a3faa3b8945f2319b85c",
+          "Gateway": "",
+          "IPAddress": "",
+          "MacAddress": "",
+          "IPPrefixLen": 0,
+          "IPv6Gateway": "",
+          "GlobalIPv6Address": "",
+          "GlobalIPv6PrefixLen": 0,
+          "DNSNames": null
+        }
+      }
+    },
+    "ImageManifestDescriptor": {
+      "mediaType": "application/vnd.oci.image.manifest.v1+json",
+      "digest": "sha256:adc00ccf18af13f02b88f2915247731252c39a670d9315cc72b319579caec65a",
+      "size": 5413,
+      "platform": {
+        "architecture": "amd64",
+        "os": "linux"
+      }
+    }
+  },
+  "probe": {
+    "uid": 1000,
+    "gid": 100,
+    "groups": [
+      100
+    ],
+    "status": {
+      "CapInh": "0000000000000000",
+      "CapPrm": "0000000000000000",
+      "CapEff": "0000000000000000",
+      "CapBnd": "0000000000000000",
+      "CapAmb": "0000000000000000",
+      "NoNewPrivs": "1",
+      "Seccomp": "2"
+    },
+    "interfaces": [
+      "lo"
+    ],
+    "ipv4Routes": [],
+    "ipv6Routes": [
+      "lo",
+      "lo",
+      "lo"
+    ],
+    "mounts": [
+      {
+        "mountPoint": "/",
+        "root": "/",
+        "fsType": "overlay",
+        "source": "overlay",
+        "options": "ro,relatime"
+      },
+      {
+        "mountPoint": "/proc",
+        "root": "/",
+        "fsType": "proc",
+        "source": "proc",
+        "options": "rw,nosuid,nodev,noexec,relatime"
+      },
+      {
+        "mountPoint": "/dev",
+        "root": "/",
+        "fsType": "tmpfs",
+        "source": "tmpfs",
+        "options": "rw,nosuid"
+      },
+      {
+        "mountPoint": "/dev/pts",
+        "root": "/",
+        "fsType": "devpts",
+        "source": "devpts",
+        "options": "rw,nosuid,noexec,relatime"
+      },
+      {
+        "mountPoint": "/sys",
+        "root": "/",
+        "fsType": "sysfs",
+        "source": "sysfs",
+        "options": "ro,nosuid,nodev,noexec,relatime"
+      },
+      {
+        "mountPoint": "/sys/fs/cgroup",
+        "root": "/",
+        "fsType": "cgroup2",
+        "source": "cgroup",
+        "options": "ro,nosuid,nodev,noexec,relatime"
+      },
+      {
+        "mountPoint": "/dev/mqueue",
+        "root": "/",
+        "fsType": "mqueue",
+        "source": "mqueue",
+        "options": "rw,nosuid,nodev,noexec,relatime"
+      },
+      {
+        "mountPoint": "/dev/shm",
+        "root": "/",
+        "fsType": "tmpfs",
+        "source": "shm",
+        "options": "rw,nosuid,nodev,noexec,relatime"
+      },
+      {
+        "mountPoint": "/tmp",
+        "root": "/",
+        "fsType": "tmpfs",
+        "source": "tmpfs",
+        "options": "rw,nosuid,nodev,noexec,relatime"
+      },
+      {
+        "mountPoint": "/etc/hostname",
+        "root": "/@/var/lib/docker/containers/df97a5f089aa3c674c1b6f5bad77ed89bf44aabeb80726947e35ef1e4cec4b5d/hostname",
+        "fsType": "btrfs",
+        "source": "/dev/nvme0n1p2",
+        "options": "ro,relatime"
+      },
+      {
+        "mountPoint": "/etc/hosts",
+        "root": "/@/var/lib/docker/containers/df97a5f089aa3c674c1b6f5bad77ed89bf44aabeb80726947e35ef1e4cec4b5d/hosts",
+        "fsType": "btrfs",
+        "source": "/dev/nvme0n1p2",
+        "options": "ro,relatime"
+      },
+      {
+        "mountPoint": "/etc/resolv.conf",
+        "root": "/@/var/lib/docker/containers/df97a5f089aa3c674c1b6f5bad77ed89bf44aabeb80726947e35ef1e4cec4b5d/resolv.conf",
+        "fsType": "btrfs",
+        "source": "/dev/nvme0n1p2",
+        "options": "ro,relatime"
+      },
+      {
+        "mountPoint": "/run/kordn.sock",
+        "root": "/@/tmp/kordn-fixture/guardian.sock",
+        "fsType": "btrfs",
+        "source": "/dev/nvme0n1p2",
+        "options": "ro,relatime"
+      },
+      {
+        "mountPoint": "/proc/bus",
+        "root": "/bus",
+        "fsType": "proc",
+        "source": "proc",
+        "options": "ro,nosuid,nodev,noexec,relatime"
+      },
+      {
+        "mountPoint": "/proc/fs",
+        "root": "/fs",
+        "fsType": "proc",
+        "source": "proc",
+        "options": "ro,nosuid,nodev,noexec,relatime"
+      },
+      {
+        "mountPoint": "/proc/irq",
+        "root": "/irq",
+        "fsType": "proc",
+        "source": "proc",
+        "options": "ro,nosuid,nodev,noexec,relatime"
+      },
+      {
+        "mountPoint": "/proc/sys",
+        "root": "/sys",
+        "fsType": "proc",
+        "source": "proc",
+        "options": "ro,nosuid,nodev,noexec,relatime"
+      },
+      {
+        "mountPoint": "/proc/sysrq-trigger",
+        "root": "/sysrq-trigger",
+        "fsType": "proc",
+        "source": "proc",
+        "options": "ro,nosuid,nodev,noexec,relatime"
+      },
+      {
+        "mountPoint": "/proc/acpi",
+        "root": "/",
+        "fsType": "tmpfs",
+        "source": "tmpfs",
+        "options": "ro,relatime"
+      },
+      {
+        "mountPoint": "/proc/asound",
+        "root": "/",
+        "fsType": "tmpfs",
+        "source": "tmpfs",
+        "options": "ro,relatime"
+      },
+      {
+        "mountPoint": "/proc/interrupts",
+        "root": "/null",
+        "fsType": "tmpfs",
+        "source": "tmpfs",
+        "options": "rw,nosuid"
+      },
+      {
+        "mountPoint": "/proc/kcore",
+        "root": "/null",
+        "fsType": "tmpfs",
+        "source": "tmpfs",
+        "options": "rw,nosuid"
+      },
+      {
+        "mountPoint": "/proc/keys",
+        "root": "/null",
+        "fsType": "tmpfs",
+        "source": "tmpfs",
+        "options": "rw,nosuid"
+      },
+      {
+        "mountPoint": "/proc/timer_list",
+        "root": "/null",
+        "fsType": "tmpfs",
+        "source": "tmpfs",
+        "options": "rw,nosuid"
+      },
+      {
+        "mountPoint": "/sys/devices/virtual/powercap",
+        "root": "/",
+        "fsType": "tmpfs",
+        "source": "tmpfs",
+        "options": "ro,relatime"
+      },
+      {
+        "mountPoint": "/sys/firmware",
+        "root": "/",
+        "fsType": "tmpfs",
+        "source": "tmpfs",
+        "options": "ro,relatime"
+      },
+      {
+        "mountPoint": "/sys/devices/system/cpu/cpu0/thermal_throttle",
+        "root": "/",
+        "fsType": "tmpfs",
+        "source": "tmpfs",
+        "options": "ro,relatime"
+      },
+      {
+        "mountPoint": "/sys/devices/system/cpu/cpu1/thermal_throttle",
+        "root": "/",
+        "fsType": "tmpfs",
+        "source": "tmpfs",
+        "options": "ro,relatime"
+      },
+      {
+        "mountPoint": "/sys/devices/system/cpu/cpu2/thermal_throttle",
+        "root": "/",
+        "fsType": "tmpfs",
+        "source": "tmpfs",
+        "options": "ro,relatime"
+      },
+      {
+        "mountPoint": "/sys/devices/system/cpu/cpu3/thermal_throttle",
+        "root": "/",
+        "fsType": "tmpfs",
+        "source": "tmpfs",
+        "options": "ro,relatime"
+      },
+      {
+        "mountPoint": "/sys/devices/system/cpu/cpu4/thermal_throttle",
+        "root": "/",
+        "fsType": "tmpfs",
+        "source": "tmpfs",
+        "options": "ro,relatime"
+      },
+      {
+        "mountPoint": "/sys/devices/system/cpu/cpu5/thermal_throttle",
+        "root": "/",
+        "fsType": "tmpfs",
+        "source": "tmpfs",
+        "options": "ro,relatime"
+      },
+      {
+        "mountPoint": "/sys/devices/system/cpu/cpu6/thermal_throttle",
+        "root": "/",
+        "fsType": "tmpfs",
+        "source": "tmpfs",
+        "options": "ro,relatime"
+      },
+      {
+        "mountPoint": "/sys/devices/system/cpu/cpu7/thermal_throttle",
+        "root": "/",
+        "fsType": "tmpfs",
+        "source": "tmpfs",
+        "options": "ro,relatime"
+      },
+      {
+        "mountPoint": "/sys/devices/system/cpu/cpu8/thermal_throttle",
+        "root": "/",
+        "fsType": "tmpfs",
+        "source": "tmpfs",
+        "options": "ro,relatime"
+      },
+      {
+        "mountPoint": "/sys/devices/system/cpu/cpu9/thermal_throttle",
+        "root": "/",
+        "fsType": "tmpfs",
+        "source": "tmpfs",
+        "options": "ro,relatime"
+      },
+      {
+        "mountPoint": "/sys/devices/system/cpu/cpu10/thermal_throttle",
+        "root": "/",
+        "fsType": "tmpfs",
+        "source": "tmpfs",
+        "options": "ro,relatime"
+      },
+      {
+        "mountPoint": "/sys/devices/system/cpu/cpu11/thermal_throttle",
+        "root": "/",
+        "fsType": "tmpfs",
+        "source": "tmpfs",
+        "options": "ro,relatime"
+      }
+    ],
+    "writes": [
+      {
+        "path": "/",
+        "result": "EROFS"
+      },
+      {
+        "path": "/etc",
+        "result": "EROFS"
+      },
+      {
+        "path": "/usr",
+        "result": "EROFS"
+      },
+      {
+        "path": "/var",
+        "result": "EROFS"
+      },
+      {
+        "path": "/app",
+        "result": "EROFS"
+      },
+      {
+        "path": "/run",
+        "result": "EROFS"
+      }
+    ],
+    "paths": [
+      {
+        "path": "/var/run/docker.sock",
+        "result": "ENOENT"
+      },
+      {
+        "path": "/run/docker.sock",
+        "result": "ENOENT"
+      },
+      {
+        "path": "/run/host-services/ssh-auth.sock",
+        "result": "ENOENT"
+      },
+      {
+        "path": "/home/alice",
+        "result": "ENOENT"
+      }
+    ],
+    "connects": [
+      {
+        "host": "1.1.1.1",
+        "port": 443,
+        "result": "ENETUNREACH"
+      },
+      {
+        "host": "8.8.8.8",
+        "port": 53,
+        "result": "ENETUNREACH"
+      },
+      {
+        "host": "2606:4700:4700::1111",
+        "port": 443,
+        "result": "ENETUNREACH"
+      },
+      {
+        "host": "172.17.0.1",
+        "port": 80,
+        "result": "ENETUNREACH"
+      },
+      {
+        "host": "169.254.169.254",
+        "port": 80,
+        "result": "ENETUNREACH"
+      },
+      {
+        "host": "192.0.2.10",
+        "port": 80,
+        "result": "ENETUNREACH"
+      },
+      {
+        "host": "192.0.2.11",
+        "port": 80,
+        "result": "ENETUNREACH"
+      },
+      {
+        "host": "127.0.0.1",
+        "port": 36927,
+        "result": "ECONNREFUSED"
+      },
+      {
+        "host": "::1",
+        "port": 36927,
+        "result": "ECONNREFUSED"
+      }
+    ],
+    "env": [
+      "HOME",
+      "HOSTNAME",
+      "NODE_ENV",
+      "PATH",
+      "SSL_CERT_FILE"
+    ],
+    "pidsMax": "64",
+    "memoryMax": "536870912",
+    "pid1": [
+      "/nodejs/bin/node",
+      "-e",
+      "setInterval(() => {}, 1 << 30)"
+    ],
+    "socket": {
+      "connected": true,
+      "error": null,
+      "response": null
+    }
+  },
+  "canaryHits": 0
+}
