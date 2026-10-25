@@ -72,7 +72,8 @@ export function createGuardianClient(socketPath: string, options: GuardianClient
  */
 function encodeFrame(id: string, tool: unknown, args: unknown): string {
   const name = typeof tool === 'string' ? tool.slice(0, MAX_TOOL_CHARS) : '';
-  const frame = JSON.stringify({ v: 1, id, tool: name, args });
+  // JSON.stringify drops an undefined key, and the guardian refuses a frame without args.
+  const frame = JSON.stringify({ v: 1, id, tool: name, args: args === undefined ? null : args });
   if (Buffer.byteLength(frame, 'utf8') <= MAX_FRAME_BYTES) return frame;
   return JSON.stringify({ v: 1, id, tool: name, args: null });
 }

@@ -140,7 +140,10 @@ describe('kordn CLI', () => {
       const client = await stdioClient(['--guardian', path]);
       expect((await client.callTool(balance)).structuredContent).toMatchObject({ currency: 'USD' });
       expect((await client.callTool({ name: 'af_add_payee', arguments: { payeeId: 'x' } })).isError).toBe(true);
+      // No arguments at all: the frame must still be valid so the guardian logs it.
+      expect((await client.callTool({ name: 'shell' })).structuredContent).toEqual({ error: { code: 'UNKNOWN_ACTION' } });
       expect(await guardian.listActivity({ events: ['policy.denied'] })).toMatchObject([
+        { agent: policy.agentId, reasonCode: 'UNKNOWN_ACTION' },
         { agent: policy.agentId, reasonCode: 'UNKNOWN_ACTION' },
       ]);
     });

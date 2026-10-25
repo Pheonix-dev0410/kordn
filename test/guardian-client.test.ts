@@ -103,6 +103,15 @@ describe('guardian socket client', () => {
     expect(await createGuardianClient(path, { timeoutMs: 1000 })('a', 'af_get_balance', {})).toEqual(unavailable);
   });
 
+  it('still reaches the guardian when the call has no args, so the attempt is logged', async () => {
+    const { path, guardian } = await startGuardian();
+    expect(await createGuardianClient(path)('a', 'shell', undefined)).toMatchObject({
+      ok: false,
+      error: { code: 'UNKNOWN_ACTION' },
+    });
+    expect(await guardian.listActivity({ events: ['policy.denied'] })).toMatchObject([{ reasonCode: 'UNKNOWN_ACTION' }]);
+  });
+
   it('still reaches the guardian with oversized args or tool names, so the attempt is logged', async () => {
     const { path, guardian } = await startGuardian();
     const handleCall = createGuardianClient(path);
