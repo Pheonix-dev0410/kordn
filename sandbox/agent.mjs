@@ -54,8 +54,9 @@ const request = (method, params) =>
   });
 
 // Older protocol versions need initialize; a stateless server answers it with an error.
-// Unverified: the 2026-07-28 protocol may also want version metadata on every request
-// (_meta). Check against the real kordn server (#9) before relying on this agent.
+// Verified against kordn's server (#9, @modelcontextprotocol/server 2.3.1, whose latest protocol is
+// 2025-11-25): it negotiates through initialize and needs no per-request _meta. A later SDK on
+// the stateless 2026 protocol may; the Docker end-to-end test will show it.
 const init = await request('initialize', {
   protocolVersion: '2025-11-25',
   capabilities: {},
