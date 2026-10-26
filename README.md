@@ -102,7 +102,7 @@ For Stripe, set `STRIPE_API_KEY` instead. kordn uses the PayPal sandbox and refu
 PayPal often answers that a payout is still processing. kordn reports it as `unknown` and keeps it counted against your limits until PayPal says it went through or failed. It checks every 30 seconds and whenever the agent asks for the transfer's status.
 
 PayPal notes:
-- Balance and transaction history need the app's **Transaction search** feature; without it those two tools fail and payouts still work.
+- Balance and transaction history need the app's **Transaction search** feature; without it those two tools fail and payouts still work. PayPal updates both up to 3 hours late, so the agent can see a balance from before its latest payouts. kordn's limits don't depend on it: they use kordn's own ledger.
 - PayPal can't look a payout up by kordn's id. After a lost reply or a restart, kordn checks by sending a $0 payout with the same id: PayPal either points to the real one or denies the $0 one (`ZERO_AMOUNT`, nothing moves), which also stops the original from arriving late. These denied $0 batches show up in your payout history.
 - A payout to an email with no PayPal account is `UNCLAIMED` until claimed or returned after 30 days. kordn counts it as spent.
 
