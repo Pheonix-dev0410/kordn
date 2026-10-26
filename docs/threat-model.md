@@ -39,3 +39,9 @@ Out of scope: root on the host, kernel escapes, a modified kordn binary.
 | Kill kordn mid-transfer | No duplicate transfer, quota held |
 | Direct network access to the bank from the sandbox | No route |
 | Read the policy database from the sandbox | Not mounted |
+| Admin change with a foreign `Origin` or no CSRF token | 403 |
+| Page on a rebinding domain calling the admin UI (bad `Host`) | Rejected |
+
+## Known limits
+
+- The admin cookie isn't port-isolated on plain http. A hostile web server on another `127.0.0.1` port that the user visits receives it. This needs a local process, so Guard mode only. The Origin check and the CSRF token still stop cross-port CSRF.
