@@ -1,7 +1,7 @@
 import { createHash } from 'node:crypto';
 import { afterEach, describe, expect, it } from 'vitest';
 import { startAdminServer, type AdminServer } from '../src/admin/server.js';
-import { createFakeGuardian } from '../src/fake-guardian.js';
+import { createFakeGuardian } from './fake-guardian.js';
 import { agent, login, originOf, policy, type Reply, send, start } from './admin-helpers.js';
 
 const servers: AdminServer[] = [];
@@ -273,6 +273,25 @@ describe('admin policy editor', () => {
 
     const { server: contained } = await started({ mode: 'contain' });
     expect((await send(contained, 'GET', '/login')).body).toContain('Contain mode');
+  });
+
+  it('shows the mode set later: checking claims nothing contained, then the result', async () => {
+    const { server } = await started({ mode: 'checking' });
+    const s = await login(server);
+    const checking = (await s.get('/approvals')).body;
+    expect(checking).toContain('Checking isolation');
+    expect(checking).not.toMatch(/contain mode|contained|sandbox with/i);
+    expect((await send(server, 'GET', '/login')).body).toContain('Checking isolation');
+
+    server.setMode('guard');
+    expect((await s.get('/approvals')).body).toContain('Guard mode');
+    server.setMode('contain');
+    expect((await s.get('/approvals')).body).toContain('Contain mode');
+    server.setMode('refused');
+    const refused = (await s.get('/approvals')).body;
+    expect(refused).toContain('Refused');
+    expect(refused).not.toMatch(/contain mode/i);
+    expect(() => server.setMode('observe' as 'guard')).toThrow(/mode/);
   });
 
   it('saves limits as exact integer minor units through updatePolicy', async () => {

@@ -4,7 +4,12 @@ import { AmountMinor, type AuditEvent } from '../schema.js';
 import { formatUsd, POLICY_FIELDS, type PolicyFormValues } from './forms.js';
 import { Html, html } from './html.js';
 
-export type Mode = 'guard' | 'contain';
+/**
+ * guard and contain as decided by the caller. kordn contain shows checking while the isolation
+ * checks run, and refused when --require-contain stops the agent from starting.
+ */
+export const MODES = ['checking', 'guard', 'contain', 'refused'] as const;
+export type Mode = (typeof MODES)[number];
 
 // No scripts at all. The one stylesheet is inline and allowed by hash, so the CSP needs
 // no 'unsafe-inline' and no route outside the session check.
@@ -37,12 +42,17 @@ export const CSP = [
 ].join('; ');
 
 const MODE_TEXT: Record<Mode, Html> = {
+  // Says nothing about isolation yet: until the checks pass, Guard is all that can be claimed.
+  checking: html`<strong>Checking isolation.</strong> The sandbox checks are still running and the agent hasn't
+    started. Until they finish, assume Guard mode: only calls that go through kordn are checked.`,
   guard: html`<strong>Guard mode.</strong> mock-bank typed tools protected: every call that goes through kordn is
     checked. Other tools the agent has (a browser, a shell, other apps, hosted agents) are not protected and can
     go around kordn.`,
   contain: html`<strong>Contain mode.</strong> mock-bank typed tools protected: the agent runs in a sandbox with
     no network and kordn is its only way out. Browsers, apps and hosted agents outside the sandbox are not
     protected.`,
+  refused: html`<strong>Refused.</strong> The isolation checks failed and kordn was told to require full isolation,
+    so the agent was not started.`,
 };
 
 export interface PageContext {

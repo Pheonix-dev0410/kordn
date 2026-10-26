@@ -2,7 +2,7 @@ import { request } from 'node:http';
 import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client';
 import { afterEach, describe, expect, it } from 'vitest';
 import policyJson from '../examples/policy.json' with { type: 'json' };
-import { createFakeGuardian } from '../src/fake-guardian.js';
+import { createFakeGuardian } from './fake-guardian.js';
 import { serveHttp } from '../src/http.js';
 import { createMcpServer } from '../src/mcp-server.js';
 import { Policy } from '../src/schema.js';

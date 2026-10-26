@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import policyJson from '../examples/policy.json' with { type: 'json' };
-import { createFakeGuardian } from '../src/fake-guardian.js';
+import { createFakeGuardian } from './fake-guardian.js';
 import type { Guardian } from '../src/guardian-api.js';
 import { serveGuardianSocket } from '../src/guardian-socket.js';
 import { AuditEvent, MAX_FRAME_BYTES, Policy } from '../src/schema.js';
@@ -258,6 +258,12 @@ describe('guardian socket options', () => {
   it('defaults to 32 connections', async () => {
     await start();
     expect(servers[0]!.maxConnections).toBe(32);
+  });
+
+  it('treats an option passed as undefined as not passed', async () => {
+    const guardian = createFakeGuardian({ policy });
+    await startWith(guardian, { maxConnections: undefined, maxInFlight: undefined, idleTimeoutMs: undefined });
+    expect(servers.at(-1)!.maxConnections).toBe(32);
   });
 
   it.each([

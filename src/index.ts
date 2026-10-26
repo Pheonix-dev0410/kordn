@@ -1,29 +1,58 @@
 #!/usr/bin/env node
 import { readFileSync } from 'node:fs';
+import { constants } from 'node:os';
 import { parseArgs } from 'node:util';
 import { serveStdio } from '@modelcontextprotocol/server/stdio';
 import { z } from 'zod';
-import { createFakeGuardian } from './fake-guardian.js';
+import { writeAdminFile } from './admin/runtime-file.js';
+import type { Mode } from './admin/pages.js';
+import { startAdminServer } from './admin/server.js';
 import type { Guardian } from './guardian-api.js';
 import { createGuardianClient } from './guardian-client.js';
 import { serveHttp } from './http.js';
 import { createMcpServer } from './mcp-server.js';
+import { assertContainPlatform, formatReport, reapStaleContainers, runContain } from './sandbox.js';
 import { Policy } from './schema.js';
 
 // The kordn CLI and the only place arguments are parsed. stdout belongs to the MCP
 // stdio transport, so everything human-readable goes to stderr.
 
-const USAGE = `usage: kordn [--policy <path> | --guardian <socket>] [--http [--port <n>] [--allowed-host <name>]...]
+const USAGE = `usage: kordn [--policy <path>] [--data <dir>] [--guardian <socket>] [--http [--port <n>] [--allowed-host <name>]...] [--admin [--admin-port <n>]]
+       kordn contain [--image <ref>] [--policy <path>] [--data <dir>] [--require-contain] [--admin [--admin-port <n>]] [-- <command>...]
 
   (default)              MCP over stdio, guardian in-process (Guard mode)
-  --policy <path>        policy file (default: examples/policy.json in the kordn package)
+  --policy <path>        policy file; replaces the stored policy (default: examples/policy.json,
+                         used only on first run)
+  --data <dir>           where the ledger and mock bank live (default: ~/.local/state/kordn)
   --guardian <socket>    forward every call to the guardian on this Unix socket (Contain mode)
   --http                 Streamable HTTP at http://127.0.0.1:<port>/mcp, needs KORDN_TOKEN
   --port <n>             HTTP port (default 3333)
-  --allowed-host <name>  also accept this Host/Origin, e.g. a tunnel's public hostname`;
+  --allowed-host <name>  also accept this Host/Origin, e.g. a tunnel's public hostname
+  --admin                admin UI on 127.0.0.1; its URL and login token go to stderr and to
+                         $XDG_RUNTIME_DIR/kordn/admin-<pid>.json
+  --admin-port <n>       admin UI port (default 0: any free port)
+
+  contain                run the agent in the sandbox (Linux, Docker), guardian in-process
+  --image <ref>          sandbox image (default kordn-sandbox)
+  --require-contain      don't run the agent unless every isolation check passed
+  -- <command>...        the full command to run in the sandbox instead of the image's own`;
+
+// node:sqlite prints an ExperimentalWarning on Node 24. stderr is for kordn's own messages, so
+// drop that one and print the rest as Node would. The guardian is imported after this runs.
+process.removeAllListeners('warning');
+process.on('warning', (warning) => {
+  if (warning.name === 'ExperimentalWarning' && /SQLite/.test(warning.message)) return;
+  process.stderr.write(`${warning.name}: ${warning.message}\n`);
+});
+
+async function openGuardian(dir: string | undefined, policy: Policy, replacePolicy: boolean) {
+  const { defaultDataDir, openLocalGuardian } = await import('./local-guardian.js');
+  return openLocalGuardian(dir ?? defaultDataDir(), policy, replacePolicy);
+}
 
 const DEFAULT_POLICY = new URL('../examples/policy.json', import.meta.url);
 const DEFAULT_PORT = 3333;
+const DEFAULT_IMAGE = 'kordn-sandbox';
 // In Contain mode the guardian knows the agent from the socket; this label goes nowhere.
 const SOCKET_BOUND_AGENT = 'socket-bound';
 
@@ -31,49 +60,120 @@ class UsageError extends Error {}
 
 interface Options {
   policy?: string;
+  data?: string;
   guardian?: string;
   http: boolean;
   port: number;
   allowedHosts: string[];
+  admin: boolean;
+  adminPort: number;
   help: boolean;
 }
 
-function parse(argv: string[]): Options {
-  let values;
+interface ContainOptions {
+  policy?: string;
+  data?: string;
+  image: string;
+  requireContain: boolean;
+  /** Replaces the image's command when given. */
+  agentCommand?: string[];
+  admin: boolean;
+  adminPort: number;
+  help: boolean;
+}
+
+function parseOrUsage<T>(parse: () => T): T {
   try {
-    ({ values } = parseArgs({
+    return parse();
+  } catch (error) {
+    throw new UsageError(error instanceof Error ? error.message : String(error));
+  }
+}
+
+function portOption(value: string, flag: string): number {
+  if (!/^\d{1,5}$/.test(value) || Number(value) > 65535) throw new UsageError(`${flag} must be 0-65535`);
+  return Number(value);
+}
+
+function adminPortOption(values: { admin: boolean; 'admin-port'?: string }): number {
+  if (values['admin-port'] === undefined) return 0;
+  if (!values.admin) throw new UsageError('--admin-port needs --admin');
+  return portOption(values['admin-port'], '--admin-port');
+}
+
+function parse(argv: string[]): Options {
+  const { values } = parseOrUsage(() =>
+    parseArgs({
       args: argv,
       strict: true,
       allowPositionals: false,
       options: {
         policy: { type: 'string' },
+        data: { type: 'string' },
         guardian: { type: 'string' },
         http: { type: 'boolean', default: false },
         port: { type: 'string' },
         'allowed-host': { type: 'string', multiple: true },
+        admin: { type: 'boolean', default: false },
+        'admin-port': { type: 'string' },
         help: { type: 'boolean', short: 'h', default: false },
       },
-    }));
-  } catch (error) {
-    throw new UsageError(error instanceof Error ? error.message : String(error));
+    }),
+  );
+  if ((values.policy !== undefined || values.data !== undefined) && values.guardian !== undefined) {
+    throw new UsageError('--policy and --data conflict with --guardian: in Contain mode the guardian owns them');
   }
-  if (values.policy !== undefined && values.guardian !== undefined) {
-    throw new UsageError('--policy and --guardian conflict: in Contain mode the guardian owns the policy');
+  if (values.admin && values.guardian !== undefined) {
+    throw new UsageError('--admin and --guardian conflict: the admin UI runs where the guardian runs');
   }
   if (!values.http && (values.port !== undefined || values['allowed-host'] !== undefined)) {
     throw new UsageError('--port and --allowed-host need --http');
   }
-  let port = DEFAULT_PORT;
-  if (values.port !== undefined) {
-    if (!/^\d{1,5}$/.test(values.port) || Number(values.port) > 65535) throw new UsageError('--port must be 0-65535');
-    port = Number(values.port);
-  }
   return {
     policy: values.policy,
+    data: values.data,
     guardian: values.guardian,
     http: values.http,
-    port,
+    port: values.port === undefined ? DEFAULT_PORT : portOption(values.port, '--port'),
     allowedHosts: (values['allowed-host'] ?? []).map(allowedHost),
+    admin: values.admin,
+    adminPort: adminPortOption(values),
+    help: values.help,
+  };
+}
+
+function parseContain(argv: string[]): ContainOptions {
+  const { values, positionals, tokens } = parseOrUsage(() =>
+    parseArgs({
+      args: argv,
+      strict: true,
+      allowPositionals: true,
+      tokens: true,
+      options: {
+        policy: { type: 'string' },
+        data: { type: 'string' },
+        image: { type: 'string' },
+        'require-contain': { type: 'boolean', default: false },
+        admin: { type: 'boolean', default: false },
+        'admin-port': { type: 'string' },
+        help: { type: 'boolean', short: 'h', default: false },
+      },
+    }),
+  );
+  // Only `--` starts the agent command, so a mistyped flag can't silently become one.
+  const terminator = tokens.findIndex((t) => t.kind === 'option-terminator');
+  if (tokens.some((t, i) => t.kind === 'positional' && (terminator === -1 || i < terminator))) {
+    throw new UsageError(`unexpected argument ${JSON.stringify(positionals[0])}; put the agent command after --`);
+  }
+  if (terminator !== -1 && positionals.length === 0) throw new UsageError('-- must be followed by the agent command');
+  return {
+    policy: values.policy,
+    data: values.data,
+    image: values.image ?? DEFAULT_IMAGE,
+    requireContain: values['require-contain'],
+    agentCommand: positionals.length ? positionals : undefined,
+    admin: values.admin,
+    adminPort: adminPortOption(values),
     help: values.help,
   };
 }
@@ -110,38 +210,209 @@ function loadPolicy(path: string | URL): Policy {
   return parsed.data;
 }
 
-async function main(argv: string[], env: NodeJS.ProcessEnv): Promise<void> {
-  const options = parse(argv);
-  if (options.help) {
-    process.stdout.write(`${USAGE}\n`);
-    return;
-  }
+interface RunningAdmin {
+  port: number;
+  setMode(mode: Mode): void;
+  /** Also removes the admin file. Safe to call more than once. */
+  close(): Promise<void>;
+}
 
+const MODE_LABEL: Record<Mode, string> = {
+  checking: 'checking isolation',
+  guard: 'guard mode',
+  contain: 'contain mode',
+  refused: 'refused',
+};
+
+/**
+ * Starts the admin UI on the in-process guardian and tells the user where it is: on stderr,
+ * and in the admin file for when an AI client spawned kordn and hides stderr. The file also
+ * goes on any exit, even a forced one.
+ */
+async function startAdmin(guardian: Guardian, agentId: string, mode: Mode, port: number): Promise<RunningAdmin> {
+  const admin = await startAdminServer({ guardian, agentId, mode, port });
+  let file;
+  try {
+    file = writeAdminFile({ url: admin.url, token: admin.token, pid: process.pid, agentId });
+  } catch (error) {
+    await admin.close();
+    throw error;
+  }
+  const remove = file.remove;
+  process.on('exit', remove);
+  process.stderr.write(
+    `kordn: admin UI at ${admin.url} (${MODE_LABEL[mode]})\nkordn: admin login token: ${admin.token}\nkordn: both are also in ${file.path}\n`,
+  );
+  let closed: Promise<void> | undefined;
+  return {
+    port: Number(new URL(admin.url).port),
+    setMode: (next) => {
+      admin.setMode(next);
+      process.stderr.write(`kordn: admin UI: ${MODE_LABEL[next]}${next === 'refused' ? ', shutting it down' : ''}\n`);
+    },
+    close: () => {
+      remove();
+      process.off('exit', remove);
+      closed ??= admin.close();
+      return closed;
+    },
+  };
+}
+
+const exitCodeFor = (signal: NodeJS.Signals) => 128 + constants.signals[signal];
+
+/**
+ * SIGINT, SIGTERM and SIGHUP (terminal closed or parent gone) run `stop` once. Another signal
+ * while it runs exits at once: the user asked twice. The exit handlers still run, so the admin
+ * file goes either way.
+ */
+function onStopSignal(stop: (signal: NodeJS.Signals) => void): void {
+  let stopping = false;
+  for (const signal of ['SIGINT', 'SIGTERM', 'SIGHUP'] as const) {
+    process.on(signal, () => {
+      if (stopping) {
+        process.stderr.write(`kordn: ${signal} again, exiting before cleanup finished\n`);
+        process.exit(exitCodeFor(signal));
+      }
+      stopping = true;
+      stop(signal);
+    });
+  }
+}
+
+async function serve(options: Options, env: NodeJS.ProcessEnv): Promise<void> {
   let agentId: string;
   let handleCall: Guardian['handleCall'];
+  let guardian: Guardian | undefined;
   if (options.guardian !== undefined) {
     agentId = SOCKET_BOUND_AGENT;
     handleCall = createGuardianClient(options.guardian);
   } else {
-    // Until the real guardian (#6) lands. The agent identity is the launcher's policy, not the client's.
+    // The agent identity is the launcher's policy, not the client's.
     const policy = loadPolicy(options.policy ?? DEFAULT_POLICY);
-    const guardian = createFakeGuardian({ policy });
+    const local = (await openGuardian(options.data, policy, options.policy !== undefined)).guardian;
+    guardian = local;
     agentId = policy.agentId;
-    handleCall = (agent, tool, args) => guardian.handleCall(agent, tool, args);
+    handleCall = (agent, tool, args) => local.handleCall(agent, tool, args);
   }
   const factory = () => createMcpServer({ agentId, handleCall });
 
+  // Installed before anything starts, so a signal during startup still shuts down what's up.
+  const closers: (() => Promise<void>)[] = [];
+  if (options.http || options.admin) {
+    onStopSignal(() => void Promise.allSettled(closers.map((close) => close())).finally(() => process.exit(0)));
+  }
+  // Outside a sandbox there is nothing to check, so the admin UI says Guard.
+  const admin = options.admin && guardian ? await startAdmin(guardian, agentId, 'guard', options.adminPort) : undefined;
+  const closeAdmin = admin?.close;
+  if (closeAdmin) closers.push(closeAdmin);
+
   if (options.http) {
     const token = env.KORDN_TOKEN ?? '';
-    const http = await serveHttp({ factory, token, port: options.port, allowedHosts: options.allowedHosts });
-    process.stderr.write(`kordn: serving MCP at ${http.url}\n`);
-    for (const signal of ['SIGINT', 'SIGTERM'] as const) {
-      process.once(signal, () => void http.close().finally(() => process.exit(0)));
+    let http;
+    try {
+      http = await serveHttp({ factory, token, port: options.port, allowedHosts: options.allowedHosts });
+    } catch (error) {
+      await closeAdmin?.();
+      throw error;
     }
+    const server = http;
+    closers.push(() => server.close());
+    process.stderr.write(`kordn: serving MCP at ${http.url}\n`);
     return;
   }
 
-  serveStdio(factory, { onerror: (error) => process.stderr.write(`kordn: ${error.message}\n`) });
+  const stdio = serveStdio(factory, { onerror: (error) => process.stderr.write(`kordn: ${error.message}\n`) });
+  closers.push(() => stdio.close());
+  if (closeAdmin) {
+    // Without the admin UI, kordn exits when the client closes stdin because nothing else keeps
+    // it alive. The admin server would, so it goes too; requests in flight still finish.
+    const clientGone = () => void closeAdmin();
+    process.stdin.once('end', clientGone).once('close', clientGone);
+  }
+}
+
+/** Returns the exit code: the agent's, or 1 if it didn't run or didn't finish. */
+async function contain(options: ContainOptions): Promise<number> {
+  assertContainPlatform();
+  const policy = loadPolicy(options.policy ?? DEFAULT_POLICY);
+  // One guardian, one agent: the policy's.
+  const local = await openGuardian(options.data, policy, options.policy !== undefined);
+  const guardian = local.guardian;
+  const controller = new AbortController();
+  let stoppedBy: NodeJS.Signals | undefined;
+  onStopSignal((signal) => {
+    stoppedBy = signal;
+    process.stderr.write(`kordn: ${signal}, stopping the sandbox\n`);
+    controller.abort();
+  });
+
+  let admin: RunningAdmin | undefined;
+  try {
+    let reaped: string[];
+    try {
+      reaped = await reapStaleContainers({ signal: controller.signal });
+    } catch (error) {
+      if (controller.signal.aborted) throw error;
+      throw new Error(`Docker is not available: ${error instanceof Error ? error.message : String(error)}`);
+    }
+    if (reaped.length) process.stderr.write(`kordn: removed ${reaped.length} sandbox container(s) left by a kordn that was killed\n`);
+    // A signal during the reaper: don't start the admin UI (or print its token) only to stop it.
+    controller.signal.throwIfAborted();
+    // Up before the checks, so they probe its real port. It says "checking" until they're done,
+    // and is up by the time the agent starts, so approvals work.
+    if (options.admin) admin = await startAdmin(guardian, policy.agentId, 'checking', options.adminPort);
+    const running = admin;
+    const { agent } = await runContain({
+      guardian,
+      agentId: policy.agentId,
+      image: options.image,
+      agentCommand: options.agentCommand,
+      requireContain: options.requireContain,
+      signal: controller.signal,
+      adminPort: running?.port,
+      onReport: async (report) => {
+        process.stderr.write(formatReport(report));
+        if (!running) return;
+        if (report.mode === 'contain' || !options.requireContain) return running.setMode(report.mode);
+        running.setMode('refused');
+        await running.close();
+      },
+    });
+    // kordn's own failures exit 1, unless a stop signal came in meanwhile: then its code, as after an abort.
+    const failure = () => (stoppedBy ? exitCodeFor(stoppedBy) : 1);
+    if (!agent) {
+      process.stderr.write('kordn: not running the agent: --require-contain needs every isolation check to pass\n');
+      return failure();
+    }
+    if (agent.timedOut) {
+      process.stderr.write('kordn: the agent timed out and was stopped\n');
+      return failure();
+    }
+    if (agent.exitCode === null) {
+      process.stderr.write(`kordn: the agent's docker exec was killed by ${agent.signal ?? 'a signal'}\n`);
+      return failure();
+    }
+    return agent.exitCode;
+  } catch (error) {
+    if (stoppedBy) return exitCodeFor(stoppedBy);
+    throw error;
+  } finally {
+    await admin?.close();
+    local.close();
+  }
+}
+
+async function main(argv: string[], env: NodeJS.ProcessEnv): Promise<void> {
+  if (argv[0] === 'contain') {
+    const options = parseContain(argv.slice(1));
+    if (options.help) return void process.stdout.write(`${USAGE}\n`);
+    process.exitCode = await contain(options);
+    return;
+  }
+  const options = parse(argv);
+  if (options.help) return void process.stdout.write(`${USAGE}\n`);
+  await serve(options, env);
 }
 
 main(process.argv.slice(2), process.env).catch((error: unknown) => {

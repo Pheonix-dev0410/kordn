@@ -1,7 +1,7 @@
 import type { AuditEvent, DenyCode, Policy } from './schema.js';
 
 // What the MCP server (#9), the sandbox launcher (#12) and the admin UI (#14, #15) need
-// from the guardian (#6). src/fake-guardian.ts implements it until the real one lands.
+// from the guardian. src/guardian.ts implements it; test/fake-guardian.ts is an in-memory stand-in for tests.
 
 export type CallResult = { ok: true; result: unknown } | { ok: false; error: { code: DenyCode; message: string } };
 
