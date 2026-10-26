@@ -86,6 +86,13 @@ single owner. Nothing is hosted, and there's no third-party login.
    At 10 per minute, a flood needs more than 5 minutes to evict the owner's fresh
    registration, and consent takes the owner under a minute. When the approved pool is full,
    approving another app fails with a clear message until one is revoked.
+
+   The approved pool frees itself:
+   - Only approved apps with a live grant count toward the 20.
+   - Grants idle for more than 30 days are pruned, and so are approved apps with no live
+     grant and 30 days without activity.
+   - Each client remembers the `--public-url` it registered under. Clients from any other
+     URL are dropped at startup, because a new tunnel URL orphans them anyway.
 8. **`POST /revoke`** (RFC 7009) is included.
 9. **Proving ownership.** The consent page shows the app's name and redirect host, and asks
    the owner to paste `KORDN_TOKEN`, compared in constant time.
@@ -152,13 +159,17 @@ when OAuth is on. When it's off, the 401 is exactly as today.
   the client's registered URIs, gets an error page and **never** redirects.
 - Only then are other errors (wrong `response_type`, missing or non-S256
   `code_challenge`, wrong `resource`) sent back to the redirect URI as OAuth errors, with
-  `state` echoed.
+  `state` echoed. This happens only for clients the owner has approved before. For a client
+  that was never approved, these errors also get the error page, so a stranger's
+  registration can't turn kordn into an open redirector.
 - Redirect URIs must be `https:`, or `http:` with host `localhost` or `127.0.0.1` for testing.
   Fragments aren't allowed.
 - A code is bound to `client_id`, `redirect_uri`, `code_challenge` and `resource`. Using it a
   second time fails and revokes anything already issued from it.
 - The consent page sends `Content-Security-Policy` with `frame-ancestors 'none'`, plus
   `X-Frame-Options: DENY`, `Referrer-Policy: same-origin` and `Cache-Control: no-store`.
+  There's no `form-action`. Chrome checks it on every redirect after the app's callback, so
+  a callback that bounces to another domain would silently break the connection.
 - The client name is shown as untrusted text ("says it is …"). The redirect host is shown
   beside it as the thing the owner should actually check.
 
