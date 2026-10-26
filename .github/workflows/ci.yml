@@ -34,3 +34,21 @@ jobs:
       - run: npm test
         env:
           KORDN_DOCKER_TESTS: '1'
+
+  # A clean install on a fresh machine: pack kordn, install the tarball into an empty
+  # directory, and check it answers an MCP initialize over stdio.
+  install:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - run: npm ci && npm pack
+      - run: |
+          mkdir "$RUNNER_TEMP/fresh" && cd "$RUNNER_TEMP/fresh"
+          npm init -y
+          npm install "$GITHUB_WORKSPACE"/kordn-*.tgz
+          npx kordn --help
+          printf '%s\n' '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"ci","version":"0"}}}' \
+            | timeout 30 npx kordn --data "$RUNNER_TEMP/state" | head -1 | grep '"serverInfo":{"name":"kordn"'
