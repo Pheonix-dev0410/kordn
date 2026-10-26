@@ -41,20 +41,12 @@ describe('consent page', () => {
 });
 
 describe('consent CSP', () => {
-  it('locks framing and allows the redirect origin as a form target', () => {
-    const csp = consentCsp('https://chatgpt.com');
+  it('locks framing, base and defaults, and sets no form-action', () => {
+    const csp = consentCsp();
     expect(csp).toContain("frame-ancestors 'none'");
-    expect(csp).toContain("form-action 'self' https://chatgpt.com");
     expect(csp).toContain("default-src 'none'");
     expect(csp).toContain("base-uri 'none'");
-  });
-
-  it('is self only without an origin or with an unsafe one', () => {
-    expect(consentCsp()).toContain("form-action 'self';");
-    for (const bad of ['https://a.com; script-src *', 'https://a.com b', 'javascript:alert(1)', 'https://a.com/path', '']) {
-      expect(consentCsp(bad)).toContain("form-action 'self';");
-      expect(consentCsp(bad)).not.toContain('script-src');
-    }
+    expect(csp).not.toContain('form-action');
   });
 
   it('hash matches the inline style bytes on both pages', () => {

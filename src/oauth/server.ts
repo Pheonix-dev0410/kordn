@@ -62,22 +62,20 @@ function fail(status: number, error: string, description?: string): Response {
 }
 
 /** Every /authorize response is for a browser: no CORS, no framing, no caching. */
-function pageHeaders(redirectUri?: string): Record<string, string> {
-  return {
-    'Content-Security-Policy': consentCsp(redirectUri === undefined ? undefined : new URL(redirectUri).origin),
-    'X-Frame-Options': 'DENY',
-    'Referrer-Policy': 'same-origin',
-    'Cache-Control': 'no-store',
-    'X-Content-Type-Options': 'nosniff',
-  };
-}
+const PAGE_HEADERS: Readonly<Record<string, string>> = {
+  'Content-Security-Policy': consentCsp(),
+  'X-Frame-Options': 'DENY',
+  'Referrer-Policy': 'same-origin',
+  'Cache-Control': 'no-store',
+  'X-Content-Type-Options': 'nosniff',
+};
 
-function page(status: number, body: Html, redirectUri?: string, headers: Record<string, string> = {}): Response {
-  return new Response(body.value, { status, headers: { 'Content-Type': 'text/html; charset=utf-8', ...pageHeaders(redirectUri), ...headers } });
+function page(status: number, body: Html, headers: Record<string, string> = {}): Response {
+  return new Response(body.value, { status, headers: { 'Content-Type': 'text/html; charset=utf-8', ...PAGE_HEADERS, ...headers } });
 }
 
 function errorPage(status: number, message: string, headers?: Record<string, string>): Response {
-  return page(status, oauthErrorPage(message), undefined, headers);
+  return page(status, oauthErrorPage(message), headers);
 }
 
 /** For the CLI: an https origin (http only on localhost/127.0.0.1), with no path beyond "/", no query and no fragment. */
@@ -262,13 +260,13 @@ export function createOAuthServer(options: OAuthServerOptions): OAuthServer {
     for (const [key, value] of Object.entries(params)) to.searchParams.set(key, value);
     if (state !== null) to.searchParams.set('state', state);
     to.searchParams.set('iss', issuer);
-    return new Response(null, { status: 303, headers: { Location: to.href, ...pageHeaders(redirectUri) } });
+    return new Response(null, { status: 303, headers: { Location: to.href, ...PAGE_HEADERS } });
   }
 
   function showConsent(status: number, client: StoredClient, req: AuthorizeRequest, errors?: string[]): Response {
     const { id, csrf } = store.saveRequest(req);
     const view = { clientName: client.name, redirectHost: new URL(req.redirectUri).host, requestId: id, csrf, errors };
-    return page(status, consentPage(view), req.redirectUri);
+    return page(status, consentPage(view));
   }
 
   function startAuthorize(url: URL): Response {

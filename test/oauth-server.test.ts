@@ -381,7 +381,7 @@ describe('/authorize', () => {
     expect(res.headers.get('access-control-allow-origin')).toBeNull();
     const csp = res.headers.get('content-security-policy') as string;
     expect(csp).toContain("frame-ancestors 'none'");
-    expect(csp).toContain("form-action 'self' https://app.example");
+    expect(csp).not.toContain('form-action');
     expect(await res.text()).toContain('app.example');
   });
   it('approves, keeping the redirect query, and the code exchanges', async () => {

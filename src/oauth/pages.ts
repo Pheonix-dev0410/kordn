@@ -17,13 +17,12 @@ strong { word-break: break-all; }
 const STYLE = new Html(CSS);
 const STYLE_SRC = `style-src 'sha256-${createHash('sha256').update(CSS).digest('base64')}'`;
 
-// Only a bare http(s) origin is emitted, so a value can't add directives or sources.
-const ORIGIN = /^https?:\/\/[A-Za-z0-9.-]+(:\d{1,5})?$|^https?:\/\/\[[0-9A-Fa-f:]+\](:\d{1,5})?$/;
-
-/** form-action lists the redirect origin too: Chrome checks redirects that follow a form POST. */
-export function consentCsp(redirectOrigin?: string): string {
-  const formAction = redirectOrigin !== undefined && ORIGIN.test(redirectOrigin) ? `'self' ${redirectOrigin}` : "'self'";
-  return ["default-src 'none'", STYLE_SRC, `form-action ${formAction}`, "frame-ancestors 'none'", "base-uri 'none'"].join('; ');
+/**
+ * No form-action: browsers apply it to the redirect after Approve, which goes to the app's
+ * own callback, and some apps bounce through further origins from there.
+ */
+export function consentCsp(): string {
+  return ["default-src 'none'", STYLE_SRC, "frame-ancestors 'none'", "base-uri 'none'"].join('; ');
 }
 
 function layout(title: string, body: Html): Html {
