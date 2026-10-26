@@ -1,9 +1,0 @@
-{
-  "provider": "razorpayx",
-  "accountNumber": "your RazorpayX customer identifier or current account number",
-  "mode": "IMPS",
-  "payees": {
-    "utilities": "fa_your_fund_account_id",
-    "landlord": "fa_your_fund_account_id"
-  }
-}
