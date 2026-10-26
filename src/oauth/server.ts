@@ -8,11 +8,13 @@ import {
   type OAuthTokenVerifier,
   oauthMetadataResponse,
 } from '@modelcontextprotocol/server';
-import { WindowLimit } from '../admin/session.js';
+import type { Html } from '../admin/html.js';
+import { WindowLimit, sameSecret } from '../admin/session.js';
 import type { OAuthAuditEvent } from '../guardian-api.js';
 import { type AuthMethod, parseClientMetadata } from './client-metadata.js';
-import { isValidVerifier } from './pkce.js';
-import type { OAuthStore, StoredClient } from './store.js';
+import { consentCsp, consentPage, oauthErrorPage } from './pages.js';
+import { isValidChallenge, isValidVerifier } from './pkce.js';
+import type { AuthorizeRequest, OAuthStore, StoredClient } from './store.js';
 
 export interface OAuthServerOptions {
   store: OAuthStore;
@@ -38,8 +40,11 @@ export interface OAuthServer {
 const AUTH_METHODS: AuthMethod[] = ['none', 'client_secret_post', 'client_secret_basic'];
 const WELL_KNOWN_RESOURCE = '/.well-known/oauth-protected-resource';
 const WELL_KNOWN_SERVER = '/.well-known/oauth-authorization-server';
+const OWNER_FAILURES_PER_MINUTE = 5;
 
-export const OAUTH_PATHS: readonly string[] = [WELL_KNOWN_RESOURCE, `${WELL_KNOWN_RESOURCE}/mcp`, WELL_KNOWN_SERVER, '/register', '/token', '/revoke'];
+export const OAUTH_PATHS: readonly string[] = [
+  WELL_KNOWN_RESOURCE, `${WELL_KNOWN_RESOURCE}/mcp`, WELL_KNOWN_SERVER, '/register', '/authorize', '/token', '/revoke',
+];
 
 const CORS = {
   'Access-Control-Allow-Origin': '*',
@@ -53,6 +58,25 @@ function json(status: number, body: unknown, headers: Record<string, string> = {
 
 function fail(status: number, error: string, description?: string): Response {
   return json(status, description === undefined ? { error } : { error, error_description: description });
+}
+
+/** Every /authorize response is for a browser: no CORS, no framing, no caching. */
+function pageHeaders(redirectUri?: string): Record<string, string> {
+  return {
+    'Content-Security-Policy': consentCsp(redirectUri === undefined ? undefined : new URL(redirectUri).origin),
+    'X-Frame-Options': 'DENY',
+    'Referrer-Policy': 'same-origin',
+    'Cache-Control': 'no-store',
+    'X-Content-Type-Options': 'nosniff',
+  };
+}
+
+function page(status: number, body: Html, redirectUri?: string, headers: Record<string, string> = {}): Response {
+  return new Response(body.value, { status, headers: { 'Content-Type': 'text/html; charset=utf-8', ...pageHeaders(redirectUri), ...headers } });
+}
+
+function errorPage(status: number, message: string, headers?: Record<string, string>): Response {
+  return page(status, oauthErrorPage(message), undefined, headers);
 }
 
 /** For the CLI: an https origin (http only on localhost/127.0.0.1), with no path beyond "/", no query and no fragment. */
@@ -93,6 +117,7 @@ export function createOAuthServer(options: OAuthServerOptions): OAuthServer {
   const resourceString = resource.href;
   if (!parsePublicUrl(issuer)) throw new Error('publicUrl must be an https origin, or http on localhost');
   const registrations = new WindowLimit(10, 60_000, now);
+  const ownerFailures = new WindowLimit(OWNER_FAILURES_PER_MINUTE, 60_000, now);
 
   const oauthMetadata: OAuthMetadata = {
     issuer,
@@ -119,6 +144,11 @@ export function createOAuthServer(options: OAuthServerOptions): OAuthServer {
       return { token, clientId: grant.clientId, scopes: [], expiresAt: grant.expiresAt, resource: new URL(grant.resource) };
     },
   };
+
+  /** An absent resource means ours; one trailing slash is tolerated. */
+  function isOurResource(value: string | null): boolean {
+    return value === null || (value.endsWith('/') ? value.slice(0, -1) : value) === resourceString;
+  }
 
   async function form(request: Request): Promise<URLSearchParams | null> {
     if (!request.headers.get('content-type')?.toLowerCase().startsWith('application/x-www-form-urlencoded')) return null;
@@ -186,10 +216,7 @@ export function createOAuthServer(options: OAuthServerOptions): OAuthServer {
     const grantType = params.get('grant_type');
     if (grantType !== 'authorization_code' && grantType !== 'refresh_token') return fail(400, 'unsupported_grant_type', 'Unsupported grant_type');
 
-    const requested = params.get('resource');
-    if (requested !== null && (requested.endsWith('/') ? requested.slice(0, -1) : requested) !== resourceString) {
-      return fail(400, 'invalid_target', 'Unknown resource');
-    }
+    if (!isOurResource(params.get('resource'))) return fail(400, 'invalid_target', 'Unknown resource');
 
     let result;
     if (grantType === 'authorization_code') {
@@ -228,6 +255,71 @@ export function createOAuthServer(options: OAuthServerOptions): OAuthServer {
     return new Response(null, { status: 200, headers: { 'Access-Control-Allow-Origin': '*', 'Cache-Control': 'no-store' } });
   }
 
+  /** 303 back to the client; URL.searchParams keeps any query the registered redirect URI already has. */
+  function redirectBack(redirectUri: string, params: Record<string, string>, state: string | null): Response {
+    const to = new URL(redirectUri);
+    for (const [key, value] of Object.entries(params)) to.searchParams.set(key, value);
+    if (state !== null) to.searchParams.set('state', state);
+    to.searchParams.set('iss', issuer);
+    return new Response(null, { status: 303, headers: { Location: to.href, ...pageHeaders(redirectUri) } });
+  }
+
+  function showConsent(status: number, client: StoredClient, req: AuthorizeRequest, errors?: string[]): Response {
+    const { id, csrf } = store.saveRequest(req);
+    const view = { clientName: client.name, redirectHost: new URL(req.redirectUri).host, requestId: id, csrf, errors };
+    return page(status, consentPage(view), req.redirectUri);
+  }
+
+  function startAuthorize(url: URL): Response {
+    const q = url.searchParams;
+    const clientId = q.get('client_id');
+    const redirectUri = q.get('redirect_uri');
+    const client = clientId === null ? null : store.getClient(clientId);
+    // Until the redirect URI is known to be the client's own, errors must not go to it.
+    if (!client || redirectUri === null || !client.redirectUris.includes(redirectUri)) {
+      return errorPage(400, 'This app is not registered with kordn, or it asked to return to an address it did not register.');
+    }
+    const state = q.get('state');
+    const challenge = q.get('code_challenge');
+    if (q.get('response_type') !== 'code') return redirectBack(redirectUri, { error: 'unsupported_response_type' }, state);
+    if (challenge === null || !isValidChallenge(challenge) || q.get('code_challenge_method') !== 'S256') {
+      return redirectBack(redirectUri, { error: 'invalid_request' }, state);
+    }
+    if (!isOurResource(q.get('resource'))) return redirectBack(redirectUri, { error: 'invalid_target' }, state);
+    return showConsent(200, client, { clientId: client.id, redirectUri, codeChallenge: challenge, resource: resourceString, state });
+  }
+
+  async function decideAuthorize(request: Request): Promise<Response> {
+    // http.ts checks Origin too; this keeps the handler safe on its own.
+    if (request.headers.get('origin') !== issuer) return errorPage(403, 'This request did not come from the kordn approval page.');
+    const params = await form(request);
+    if (!params) return errorPage(400, 'This request did not come from the kordn approval page.');
+    const decision = params.get('decision');
+    // Checked before takeRequest so a malformed post doesn't use up the request.
+    if (decision !== 'approve' && decision !== 'deny') return errorPage(400, 'Choose Approve or Deny.');
+    const req = store.takeRequest(params.get('request') ?? '', params.get('csrf') ?? '');
+    if (!req) return errorPage(400, 'This approval page has expired or was already used. Start connecting again from the app.');
+    // The client may have been evicted, pruned or revoked while the page was open; approve() would throw.
+    const client = store.getClient(req.clientId);
+    if (!client) return errorPage(400, 'This app is no longer registered. Start connecting again from the app.');
+    const app = { client: client.name, redirectHost: new URL(req.redirectUri).host };
+
+    if (decision === 'deny') {
+      audit('oauth.denied', app);
+      return redirectBack(req.redirectUri, { error: 'access_denied' }, req.state);
+    }
+    // The correct token always passes, even while wrong ones are locked out.
+    if (!sameSecret(params.get('owner_token'), options.ownerToken)) {
+      if (ownerFailures.full()) return showConsent(429, client, req, ['Too many wrong tokens. Wait a minute.']);
+      ownerFailures.add();
+      return showConsent(401, client, req, ['Wrong KORDN_TOKEN.']);
+    }
+    const approved = store.approve(req);
+    if (!approved.ok) return errorPage(409, 'kordn already has 20 connected apps. Revoke one in the admin UI first.');
+    audit('oauth.approved', app);
+    return redirectBack(req.redirectUri, { code: approved.code }, req.state);
+  }
+
   const endpoints: Record<string, (request: Request) => Promise<Response>> = {
     '/register': register,
     '/token': token,
@@ -242,6 +334,11 @@ export function createOAuthServer(options: OAuthServerOptions): OAuthServer {
     async fetch(request) {
       const path = new URL(request.url).pathname;
       if (!OAUTH_PATHS.includes(path)) return undefined;
+      if (path === '/authorize') {
+        if (request.method === 'GET') return startAuthorize(new URL(request.url));
+        if (request.method === 'POST') return decideAuthorize(request);
+        return errorPage(405, 'Method not allowed.', { Allow: 'GET, POST' });
+      }
       if (request.method === 'OPTIONS') return new Response(null, { status: 204, headers: CORS });
       const handler = endpoints[path];
       if (handler) {

@@ -304,3 +304,213 @@ describe('CORS', () => {
     expect(res.headers.get('access-control-allow-headers')).toBe('authorization, content-type, mcp-protocol-version');
   });
 });
+
+describe('/authorize', () => {
+  function flow(publicUrl = PUBLIC) {
+    const s = setup(publicUrl);
+    const verifier = randomBytes(32).toString('base64url');
+    const challenge = createHash('sha256').update(verifier).digest('base64url');
+    const query = (params: Record<string, string>) => `/authorize?${new URLSearchParams(params).toString()}`;
+    const params = (clientId: string, redirectUri = REDIRECT, extra: Record<string, string> = {}) => ({
+      response_type: 'code', client_id: clientId, redirect_uri: redirectUri, code_challenge: challenge, code_challenge_method: 'S256', state: 'st', ...extra,
+    });
+    /** GETs the consent page and returns the hidden fields. */
+    async function open(clientId: string, redirectUri = REDIRECT) {
+      const res = await s.call(query(params(clientId, redirectUri)));
+      expect(res.status).toBe(200);
+      return fields(await res.text());
+    }
+    const submit = (body: Record<string, string>, origin = PUBLIC) => s.post('/authorize', body, { origin });
+    return { ...s, verifier, challenge, query, params, open, submit };
+  }
+  function fields(page: string) {
+    const request = page.match(/name="request" value="([^"]+)"/)?.[1];
+    const csrf = page.match(/name="csrf" value="([^"]+)"/)?.[1];
+    if (!request || !csrf) throw new Error('no form');
+    return { request, csrf };
+  }
+  const location = (res: Response) => new URL(res.headers.get('location') as string);
+
+  it('shows an error page without redirecting for an unknown client or redirect_uri', async () => {
+    const { call, query, params, register } = flow();
+    const unknown = await call(query(params('nope')));
+    expect(unknown.status).toBe(400);
+    expect(unknown.headers.get('location')).toBeNull();
+    const { body } = await register({ redirect_uris: ['https://app.example/cb?x=1'] });
+    for (const uri of ['https://app.example/cb?x=1/', 'https://app.example/cb/?x=1', 'https://app.example/cb?x=2', 'https://app.example/cb']) {
+      const res = await call(query(params(body.client_id as string, uri)));
+      expect(res.status, uri).toBe(400);
+      expect(res.headers.get('location'), uri).toBeNull();
+      expect(res.headers.get('content-security-policy')).toContain("frame-ancestors 'none'");
+    }
+  });
+  it('redirects other request errors with state and iss', async () => {
+    const { call, query, params, register } = flow();
+    const id = (await register()).body.client_id as string;
+    const cases: [Record<string, string>, string][] = [
+      [{ response_type: 'token' }, 'unsupported_response_type'],
+      [{ code_challenge: '' }, 'invalid_request'],
+      [{ code_challenge: 'short' }, 'invalid_request'],
+      [{ code_challenge_method: 'plain' }, 'invalid_request'],
+      [{ code_challenge_method: '' }, 'invalid_request'],
+      [{ resource: 'https://other.example/mcp' }, 'invalid_target'],
+    ];
+    for (const [extra, error] of cases) {
+      const res = await call(query(params(id, REDIRECT, extra)));
+      expect(res.status, error).toBe(303);
+      const to = location(res);
+      expect(to.origin + to.pathname).toBe(REDIRECT);
+      expect(Object.fromEntries(to.searchParams)).toEqual({ error, state: 'st', iss: PUBLIC });
+    }
+    const p = params(id);
+    const { code_challenge: _, ...missing } = p;
+    const res = await call(query(missing));
+    expect(location(res).searchParams.get('error')).toBe('invalid_request');
+    expect((await call(query(params(id, REDIRECT, { resource: `${PUBLIC}/mcp/` })))).status).toBe(200);
+  });
+  it('sends the consent page with framing and referrer protection', async () => {
+    const { call, query, params, register } = flow();
+    const id = (await register({ redirect_uris: ['https://app.example/cb'] })).body.client_id as string;
+    const res = await call(query(params(id, 'https://app.example/cb')));
+    expect(res.status).toBe(200);
+    expect(res.headers.get('content-type')).toContain('text/html');
+    expect(res.headers.get('x-frame-options')).toBe('DENY');
+    expect(res.headers.get('referrer-policy')).toBe('same-origin');
+    expect(res.headers.get('cache-control')).toBe('no-store');
+    expect(res.headers.get('x-content-type-options')).toBe('nosniff');
+    expect(res.headers.get('access-control-allow-origin')).toBeNull();
+    const csp = res.headers.get('content-security-policy') as string;
+    expect(csp).toContain("frame-ancestors 'none'");
+    expect(csp).toContain("form-action 'self' https://app.example");
+    expect(await res.text()).toContain('app.example');
+  });
+  it('approves, keeping the redirect query, and the code exchanges', async () => {
+    const { register, open, submit, post, verifier, audit } = flow();
+    const redirect = 'https://app.example/cb?x=1';
+    const id = (await register({ redirect_uris: [redirect], client_name: 'App' })).body.client_id as string;
+    const res = await submit({ ...(await open(id, redirect)), owner_token: 'owner', decision: 'approve' });
+    expect(res.status).toBe(303);
+    expect(res.headers.get('x-frame-options')).toBe('DENY');
+    const to = location(res);
+    expect(to.origin + to.pathname).toBe('https://app.example/cb');
+    expect(to.searchParams.get('x')).toBe('1');
+    expect(to.searchParams.get('state')).toBe('st');
+    expect(to.searchParams.get('iss')).toBe(PUBLIC);
+    const code = to.searchParams.get('code') as string;
+    expect(code).toBeTruthy();
+    expect(audit).toHaveBeenCalledWith('oauth.approved', { client: 'App', redirectHost: 'app.example' });
+    const tokens = await post('/token', { grant_type: 'authorization_code', client_id: id, code, redirect_uri: redirect, code_verifier: verifier });
+    expect(tokens.status).toBe(200);
+  });
+  it('omits state when none was sent', async () => {
+    const { call, query, params, register, submit } = flow();
+    const id = (await register()).body.client_id as string;
+    const { state: _, ...rest } = params(id);
+    const page = fields(await (await call(query(rest))).text());
+    const to = location(await submit({ ...page, owner_token: 'owner', decision: 'approve' }));
+    expect(to.searchParams.has('state')).toBe(false);
+    expect(to.searchParams.get('code')).toBeTruthy();
+  });
+  it('uses a request only once', async () => {
+    const { register, open, submit, store, post, verifier } = flow();
+    const id = (await register()).body.client_id as string;
+    const form = { ...(await open(id)), owner_token: 'owner', decision: 'approve' };
+    const first = await submit(form);
+    expect(first.status).toBe(303);
+    const second = await submit(form);
+    expect(second.status).toBe(400);
+    expect(second.headers.get('location')).toBeNull();
+    expect(await second.text()).toContain('This approval page has expired or was already used. Start connecting again from the app.');
+    const code = location(first).searchParams.get('code') as string;
+    expect((await post('/token', { grant_type: 'authorization_code', client_id: id, code, redirect_uri: REDIRECT, code_verifier: verifier })).status).toBe(200);
+    expect(store.listApps()).toHaveLength(1);
+  });
+  it('rejects a wrong CSRF token or an expired request', async () => {
+    const { register, open, submit, advance } = flow();
+    const id = (await register()).body.client_id as string;
+    const page = await open(id);
+    expect((await submit({ ...page, csrf: 'wrong', owner_token: 'owner', decision: 'approve' })).status).toBe(400);
+    advance(600_000);
+    expect((await submit({ ...page, owner_token: 'owner', decision: 'approve' })).status).toBe(400);
+  });
+  it('denies', async () => {
+    const { register, open, submit, audit, store } = flow();
+    const id = (await register({ redirect_uris: [REDIRECT], client_name: 'App' })).body.client_id as string;
+    const res = await submit({ ...(await open(id)), decision: 'deny' });
+    expect(res.status).toBe(303);
+    expect(Object.fromEntries(location(res).searchParams)).toEqual({ error: 'access_denied', state: 'st', iss: PUBLIC });
+    expect(audit).toHaveBeenCalledWith('oauth.denied', { client: 'App', redirectHost: 'a.example' });
+    expect(store.listApps()).toHaveLength(0);
+  });
+  it('locks out wrong owner tokens but lets the right one through', async () => {
+    const { register, open, submit, advance } = flow();
+    const id = (await register()).body.client_id as string;
+    let page = await open(id);
+    const wrong = async () => {
+      const res = await submit({ ...page, owner_token: 'nope', decision: 'approve' });
+      const text = await res.text();
+      page = fields(text);
+      return { status: res.status, text };
+    };
+    for (let i = 0; i < 5; i++) {
+      const res = await wrong();
+      expect(res.status).toBe(401);
+      expect(res.text).toContain('Wrong KORDN_TOKEN.');
+    }
+    const locked = await wrong();
+    expect(locked.status).toBe(429);
+    expect(locked.text).toContain('Too many wrong tokens. Wait a minute.');
+    const right = await submit({ ...page, owner_token: 'owner', decision: 'approve' });
+    expect(right.status).toBe(303);
+    expect(location(right).searchParams.get('code')).toBeTruthy();
+    page = await open(id);
+    advance(61_000);
+    expect((await wrong()).status).toBe(401);
+  });
+  it('requires the public origin on POST', async () => {
+    const { register, open, submit } = flow();
+    const id = (await register()).body.client_id as string;
+    const page = await open(id);
+    const res = await submit({ ...page, owner_token: 'owner', decision: 'approve' }, 'https://evil.example');
+    expect(res.status).toBe(403);
+    expect(res.headers.get('location')).toBeNull();
+    expect((await submit({ ...page, owner_token: 'owner', decision: 'approve' })).status).toBe(303);
+  });
+  it('rejects non-form POSTs and other methods', async () => {
+    const { call } = flow();
+    const json = await call('/authorize', { method: 'POST', headers: { 'content-type': 'application/json', origin: PUBLIC }, body: '{}' });
+    expect(json.status).toBe(400);
+    const options = await call('/authorize', { method: 'OPTIONS' });
+    expect(options.status).toBe(405);
+    expect(options.headers.get('access-control-allow-origin')).toBeNull();
+  });
+  it('refuses when 20 apps are connected', async () => {
+    const { register, open, submit, store, challenge } = flow();
+    for (let i = 0; i < 20; i++) {
+      // Straight to the store: /register allows only 10 a minute.
+      const other = store.registerClient({ name: `App ${i}`, redirectUris: [REDIRECT], authMethod: 'none' }).client.id;
+      expect(store.approve({ clientId: other, redirectUri: REDIRECT, codeChallenge: challenge, resource: `${PUBLIC}/mcp`, state: null }).ok).toBe(true);
+    }
+    const id = (await register()).body.client_id as string;
+    const res = await submit({ ...(await open(id)), owner_token: 'owner', decision: 'approve' });
+    expect(res.status).toBe(409);
+    expect(await res.text()).toContain('kordn already has 20 connected apps. Revoke one in the admin UI first.');
+  });
+  it('shows an error page when the client went away while the page was open', async () => {
+    const { register, open, submit, store } = flow();
+    const id = (await register()).body.client_id as string;
+    const page = await open(id);
+    store.revokeClient(id);
+    const res = await submit({ ...page, owner_token: 'owner', decision: 'approve' });
+    expect(res.status).toBe(400);
+    expect(res.headers.get('location')).toBeNull();
+    expect(await res.text()).toContain('This app is no longer registered. Start connecting again from the app.');
+  });
+  it('escapes the client name', async () => {
+    const { register, call, query, params } = flow();
+    const id = (await register({ redirect_uris: [REDIRECT], client_name: '<img src=x onerror=alert(1)>' })).body.client_id as string;
+    const text = await (await call(query(params(id)))).text();
+    expect(text).not.toContain('<img');
+    expect(text).toContain('&lt;img src=x onerror=alert(1)&gt;');
+  });
+});
