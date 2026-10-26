@@ -1,7 +1,6 @@
 import { readFileSync } from 'node:fs';
 import { z } from 'zod';
 import { PayPalAdapter } from './paypal.js';
-import { RazorpayXAdapter } from './razorpayx.js';
 import type { BankAdapter, Policy } from './schema.js';
 import { StripeAdapter } from './stripe.js';
 
@@ -13,12 +12,6 @@ const Payees = (id: RegExp) => z.record(z.string(), z.string().regex(id)).refine
 
 export const BankConfig = z.discriminatedUnion('provider', [
   z.strictObject({
-    provider: z.literal('razorpayx'),
-    accountNumber: z.string().regex(/^[A-Za-z0-9]{6,32}$/),
-    mode: z.enum(['NEFT', 'RTGS', 'IMPS', 'UPI']).default('IMPS'),
-    payees: Payees(/^fa_[A-Za-z0-9]+$/),
-  }),
-  z.strictObject({
     provider: z.literal('stripe'),
     payees: Payees(/^acct_[A-Za-z0-9]+$/),
   }),
@@ -28,8 +21,6 @@ export const BankConfig = z.discriminatedUnion('provider', [
   }),
 ]);
 export type BankConfig = z.infer<typeof BankConfig>;
-
-const CURRENCY = { razorpayx: 'INR', stripe: 'USD', paypal: 'USD' } as const;
 
 export function loadBankConfig(path: string): BankConfig {
   let raw: unknown;
@@ -53,9 +44,6 @@ export function openBank(config: BankConfig, policy: Policy, env: NodeJS.Process
   if (!policy.resourceId.startsWith(`${provider}:`)) {
     throw new Error(`the policy's resourceId ${policy.resourceId} is not a ${provider} account; use ${provider}:<name>`);
   }
-  if (policy.transfers.currency !== CURRENCY[provider]) {
-    throw new Error(`${provider} transfers are in ${CURRENCY[provider]}, but the policy says ${policy.transfers.currency}`);
-  }
   const unmapped = policy.transfers.allowedPayeeIds.filter((p) => !Object.hasOwn(config.payees, p));
   if (unmapped.length) throw new Error(`the bank file has no ${provider} id for payee ${unmapped.join(', ')}`);
 
@@ -64,19 +52,10 @@ export function openBank(config: BankConfig, policy: Policy, env: NodeJS.Process
     if (!value) throw new Error(`set ${name} to your ${provider} API key`);
     return value;
   };
-  const refuseLive = (isTest: boolean) => {
-    if (!isTest && !live) throw new Error(`that is a live ${provider} key; kordn uses test keys unless you pass --live`);
-  };
-
-  if (config.provider === 'razorpayx') {
-    const keyId = need('RAZORPAY_KEY_ID');
-    refuseLive(keyId.startsWith('rzp_test_'));
-    return new RazorpayXAdapter({ keyId, keySecret: need('RAZORPAY_KEY_SECRET'), accountNumber: config.accountNumber, mode: config.mode, payees: config.payees, fetch: fetchImpl });
-  }
   if (config.provider === 'paypal') {
     return new PayPalAdapter({ clientId: need('PAYPAL_CLIENT_ID'), clientSecret: need('PAYPAL_CLIENT_SECRET'), payees: config.payees, live, fetch: fetchImpl });
   }
   const apiKey = need('STRIPE_API_KEY');
-  refuseLive(/^(sk|rk)_test_/.test(apiKey));
+  if (!/^(sk|rk)_test_/.test(apiKey) && !live) throw new Error('that is a live stripe key; kordn uses test keys unless you pass --live');
   return new StripeAdapter({ apiKey, payees: config.payees, fetch: fetchImpl });
 }

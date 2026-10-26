@@ -15,6 +15,8 @@ export interface StripeOptions {
   /** Policy payee id to Stripe connected account id (acct_...). */
   payees: Record<string, string>;
   fetch?: typeof fetch;
+  /** Tests only: stripe-mock's address. */
+  api?: string;
 }
 
 interface Transfer {
@@ -24,13 +26,15 @@ interface Transfer {
 
 export class StripeAdapter implements BankAdapter {
   private readonly fetch: typeof fetch;
+  private readonly api: string;
 
   constructor(private readonly o: StripeOptions) {
     this.fetch = o.fetch ?? fetch;
+    this.api = o.api ?? API;
   }
 
   private async request<T>(method: 'GET' | 'POST', path: string, form?: Record<string, string>, headers: Record<string, string> = {}): Promise<T> {
-    const res = await this.fetch(`${API}${path}`, {
+    const res = await this.fetch(`${this.api}${path}`, {
       method,
       headers: { authorization: `Bearer ${this.o.apiKey}`, 'content-type': 'application/x-www-form-urlencoded', ...headers },
       body: form && new URLSearchParams(form).toString(),

@@ -1,7 +1,7 @@
 import { Policy } from '../schema.js';
 
 // Exact parsing of admin form input. Money never goes through floats: "75.01" is split as
-// text into whole units and cents (or paise), so 75.01 can't become 7500.999.
+// text into whole units and cents, so 75.01 can't become 7500.999.
 
 const USD = /^(0|[1-9][0-9]{0,12})(?:\.([0-9]{1,2}))?$/;
 const COUNT = /^(0|[1-9][0-9]{0,8})$/;

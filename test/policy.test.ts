@@ -25,11 +25,7 @@ describe('evaluate', () => {
   );
 
   it('only allows transfers in the policy currency', () => {
-    const inr = Policy.parse({ ...policy, resourceId: 'razorpayx:main', transfers: { ...policy.transfers, currency: 'INR' } });
-    const call = { ...transfer, resourceId: inr.resourceId };
-    expect(evaluate({ ...base, policy: inr, call: { ...call, currency: 'INR' } })).toEqual({ kind: 'allow' });
-    expect(evaluate({ ...base, policy: inr, call: { ...call, currency: 'USD' } })).toEqual(deny('INVALID_ARGUMENTS'));
-    expect(evaluate({ ...base, call: { ...transfer, currency: 'INR' } })).toEqual(deny('INVALID_ARGUMENTS'));
+    expect(evaluate({ ...base, call: { ...transfer, currency: 'EUR' as 'USD' } })).toEqual(deny('INVALID_ARGUMENTS'));
   });
 
   it('checks identity and resource before capability, payee, amount and usage', () => {
