@@ -84,6 +84,19 @@ describe('metadata', () => {
     expect(() => make('http://x.example')).toThrow();
     expect(() => make('http://127.0.0.1:1')).not.toThrow();
   });
+  it('drops clients registered under another public URL when it starts', async () => {
+    const store = new OAuthStore(new DatabaseSync(':memory:'));
+    const reg = { name: 'App', redirectUris: [REDIRECT], authMethod: 'none' as const };
+    const old = store.registerClient(reg, 'https://old.example').client;
+    const kept = store.registerClient(reg, PUBLIC).client;
+    const server = createOAuthServer({ store, publicUrl: new URL(PUBLIC), ownerToken: 'o', audit: vi.fn() });
+    expect(store.getClient(old.id)).toBeNull();
+    expect(store.getClient(kept.id)).not.toBeNull();
+    const res = (await server.fetch(new Request(`${PUBLIC}/register`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ redirect_uris: [REDIRECT] }) }))) as Response;
+    const id = ((await res.json()) as { client_id: string }).client_id;
+    createOAuthServer({ store, publicUrl: new URL(PUBLIC), ownerToken: 'o', audit: vi.fn() });
+    expect(store.getClient(id)).not.toBeNull();
+  });
   it('falls through for other paths', async () => {
     const { server } = setup();
     expect(await server.fetch(new Request('http://x/mcp'))).toBeUndefined();
@@ -539,13 +552,13 @@ describe('/authorize', () => {
     const { register, open, submit, store, challenge } = flow();
     for (let i = 0; i < 20; i++) {
       // Straight to the store: /register allows only 10 a minute.
-      const other = store.registerClient({ name: `App ${i}`, redirectUris: [REDIRECT], authMethod: 'none' }).client.id;
+      const other = store.registerClient({ name: `App ${i}`, redirectUris: [REDIRECT], authMethod: 'none' }, PUBLIC).client.id;
       expect(store.approve({ clientId: other, redirectUri: REDIRECT, codeChallenge: challenge, resource: `${PUBLIC}/mcp`, state: null }).ok).toBe(true);
     }
     const id = (await register()).body.client_id as string;
     const res = await submit({ ...(await open(id)), owner_token: 'owner', decision: 'approve' });
     expect(res.status).toBe(409);
-    expect(await res.text()).toContain('kordn already has 20 connected apps. Revoke one in the admin UI first.');
+    expect(await res.text()).toContain('kordn already has 20 connected apps. Revoke one under Apps in the admin UI (start kordn with --admin), then try again.');
   });
   it('shows an error page when the client went away while the page was open', async () => {
     const { register, open, submit, store } = flow();

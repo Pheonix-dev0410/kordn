@@ -197,7 +197,7 @@ describe('OAuth over HTTP', () => {
   it('challenges a token issued for another resource', async () => {
     const s = await start();
     const other = createOAuthServer({ store: s.store, publicUrl: new URL('https://other'), ownerToken: TOKEN, audit: () => {} });
-    const { client } = s.store.registerClient({ name: 'Other', redirectUris: [REDIRECT], authMethod: 'none' });
+    const { client } = s.store.registerClient({ name: 'Other', redirectUris: [REDIRECT], authMethod: 'none' }, 'https://other');
     const verifier = randomBytes(32).toString('base64url');
     const challenge = createHash('sha256').update(verifier).digest('base64url');
     const approved = s.store.approve({ clientId: client.id, redirectUri: REDIRECT, codeChallenge: challenge, resource: 'https://other/mcp', state: null });

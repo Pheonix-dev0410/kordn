@@ -6,6 +6,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 import type { ClientRegistration } from '../src/oauth/client-metadata.js';
 import { OAuthStore } from '../src/oauth/store.js';
 
+const ISSUER = 'https://kordn.example';
 const reg = (over: Partial<ClientRegistration> = {}): ClientRegistration => ({
   name: 'App',
   redirectUris: ['https://a.example/cb'],
@@ -19,7 +20,7 @@ describe('OAuthStore clients', () => {
   const store = new OAuthStore(db, () => time);
 
   it('registers and round-trips a client', () => {
-    const { client, secret } = store.registerClient(reg());
+    const { client, secret } = store.registerClient(reg(), ISSUER);
     expect(client.id.length).toBeGreaterThanOrEqual(32);
     expect(secret).toBeNull();
     expect(store.getClient(client.id)).toEqual(client);
@@ -28,11 +29,11 @@ describe('OAuthStore clients', () => {
   });
 
   it('checks secrets', () => {
-    const none = store.registerClient(reg()).client;
+    const none = store.registerClient(reg(), ISSUER).client;
     expect(store.checkClientSecret(none.id, null)).toBe(true);
     expect(store.checkClientSecret(none.id, 'x')).toBe(false);
     for (const authMethod of ['client_secret_post', 'client_secret_basic'] as const) {
-      const { client, secret } = store.registerClient(reg({ authMethod }));
+      const { client, secret } = store.registerClient(reg({ authMethod }), ISSUER);
       expect(secret).toBeTruthy();
       expect(store.checkClientSecret(client.id, secret)).toBe(true);
       expect(store.checkClientSecret(client.id, 'wrong')).toBe(false);
@@ -42,7 +43,7 @@ describe('OAuthStore clients', () => {
   });
 
   it('stores only a hash of the secret', () => {
-    const { client, secret } = store.registerClient(reg({ authMethod: 'client_secret_post' }));
+    const { client, secret } = store.registerClient(reg({ authMethod: 'client_secret_post' }), ISSUER);
     const rows = db.prepare('SELECT * FROM oauth_clients WHERE id = ?').all(client.id);
     expect(JSON.stringify(rows)).not.toContain(secret as string);
   });
@@ -59,7 +60,7 @@ describe('OAuthStore unapproved pool', () => {
     const { t, db, store } = setup();
     const ids: string[] = [];
     for (let i = 0; i < 51; i++) {
-      ids.push(store.registerClient(reg()).client.id);
+      ids.push(store.registerClient(reg(), ISSUER).client.id);
       t.now += 1;
     }
     expect(db.prepare('SELECT COUNT(*) AS n FROM oauth_clients').get()).toEqual({ n: 50 });
@@ -69,21 +70,21 @@ describe('OAuthStore unapproved pool', () => {
 
   it('prunes unapproved clients older than an hour', () => {
     const { t, store } = setup();
-    const old = store.registerClient(reg()).client.id;
+    const old = store.registerClient(reg(), ISSUER).client.id;
     t.now += 3_600_000;
     expect(store.getClient(old)).not.toBeNull();
     t.now += 1_000;
-    store.registerClient(reg());
+    store.registerClient(reg(), ISSUER);
     expect(store.getClient(old)).toBeNull();
   });
 
   it('never evicts or prunes approved clients', () => {
     const { t, db, store } = setup();
-    const approved = store.registerClient(reg()).client.id;
+    const approved = store.registerClient(reg(), ISSUER).client.id;
     db.prepare('UPDATE oauth_clients SET approved_at = ? WHERE id = ?').run(t.now, approved);
     t.now += 10 * 3_600_000;
     for (let i = 0; i < 60; i++) {
-      store.registerClient(reg());
+      store.registerClient(reg(), ISSUER);
       t.now += 1;
     }
     expect(store.getClient(approved)).toMatchObject({ approvedAt: expect.any(Number) });
@@ -99,7 +100,7 @@ describe('OAuthStore restart', () => {
     dir = mkdtempSync(join(tmpdir(), 'kordn-oauth-'));
     const path = join(dir, 'oauth.db');
     const first = OAuthStore.open(path);
-    const { client, secret } = first.registerClient(reg({ authMethod: 'client_secret_basic' }));
+    const { client, secret } = first.registerClient(reg({ authMethod: 'client_secret_basic' }), ISSUER);
     first.close();
     const second = OAuthStore.open(path);
     expect(second.getClient(client.id)).toEqual(client);
@@ -116,7 +117,7 @@ describe('OAuthStore requests, codes and tokens', () => {
     const t = { now: 1_700_000_000_000 };
     const db = new DatabaseSync(':memory:');
     const store = new OAuthStore(db, () => t.now);
-    const client = store.registerClient(reg({ name: 'ChatGPT', redirectUris: ['https://chatgpt.com/cb'] })).client;
+    const client = store.registerClient(reg({ name: 'ChatGPT', redirectUris: ['https://chatgpt.com/cb'] }), ISSUER).client;
     const req = (c = client) => ({ clientId: c.id, redirectUri: 'https://chatgpt.com/cb', codeChallenge: challenge, resource, state: 's1' });
     const issue = (c = client) => {
       const approved = store.approve(req(c));
@@ -144,7 +145,7 @@ describe('OAuthStore requests, codes and tokens', () => {
 
   it('keeps at most 5 pending requests per client, evicting the oldest', () => {
     const { t, store, req } = setup();
-    const other = store.registerClient(reg()).client;
+    const other = store.registerClient(reg(), ISSUER).client;
     const theirs = store.saveRequest(req(other));
     const mine = [];
     for (let i = 0; i < 6; i++) {
@@ -189,7 +190,7 @@ describe('OAuthStore requests, codes and tokens', () => {
 
   it('rejects mismatched redirect, client, resource, verifier and unknown codes', () => {
     const { store, client, req } = setup();
-    const other = store.registerClient(reg()).client;
+    const other = store.registerClient(reg(), ISSUER).client;
     const good = { clientId: client.id, redirectUri: 'https://chatgpt.com/cb', verifier, resource };
     const bad: Array<Partial<typeof good>> = [
       { redirectUri: 'https://chatgpt.com/cb2' },
@@ -209,7 +210,7 @@ describe('OAuthStore requests, codes and tokens', () => {
   it('caps approved clients at 20 but lets approved ones re-approve', () => {
     const { store, req, client } = setup();
     const clients = [client];
-    for (let i = 1; i < 21; i++) clients.push(store.registerClient(reg()).client);
+    for (let i = 1; i < 21; i++) clients.push(store.registerClient(reg(), ISSUER).client);
     for (let i = 0; i < 20; i++) expect(store.approve(req(clients[i]))).toMatchObject({ ok: true });
     expect(store.approve(req(clients[20]))).toEqual({ ok: false, error: 'full' });
     expect(store.approve(req(clients[0]))).toMatchObject({ ok: true });
@@ -274,7 +275,7 @@ describe('OAuthStore requests, codes and tokens', () => {
 
   it('kills the grant when a rotated token is replayed with the wrong client or resource', () => {
     const { store, client, issue } = setup();
-    const other = store.registerClient(reg()).client;
+    const other = store.registerClient(reg(), ISSUER).client;
     for (const over of [{ clientId: other.id }, { resource: 'https://x/mcp' }]) {
       const old = issue();
       const next = store.refresh({ refreshToken: old.refreshToken, clientId: client.id, resource });
@@ -286,7 +287,7 @@ describe('OAuthStore requests, codes and tokens', () => {
 
   it('refuses refresh for the wrong client or resource, and for unknown clients', () => {
     const { store, client, issue } = setup();
-    const other = store.registerClient(reg()).client;
+    const other = store.registerClient(reg(), ISSUER).client;
     const tokens = issue();
     expect(store.refresh({ refreshToken: tokens.refreshToken, clientId: other.id, resource })).toEqual({ ok: false, error: 'invalid_grant' });
     expect(store.refresh({ refreshToken: tokens.refreshToken, clientId: client.id, resource: 'https://x/mcp' })).toEqual({ ok: false, error: 'invalid_grant' });
@@ -329,7 +330,7 @@ describe('OAuthStore requests, codes and tokens', () => {
     const { t, store, client, issue } = setup();
     issue();
     t.now += 1000;
-    const second = store.registerClient(reg({ name: 'Second' })).client;
+    const second = store.registerClient(reg({ name: 'Second' }), ISSUER).client;
     issue(second);
     expect(store.listApps().map((a) => a.clientId)).toEqual([second.id, client.id]);
   });
@@ -351,7 +352,7 @@ describe('OAuthStore requests, codes and tokens', () => {
     try {
       const path = join(dir, 'oauth.db');
       const first = OAuthStore.open(path);
-      const client = first.registerClient(reg()).client;
+      const client = first.registerClient(reg(), ISSUER).client;
       const approved = first.approve({ clientId: client.id, redirectUri: 'https://a.example/cb', codeChallenge: challenge, resource, state: null });
       if (!approved.ok) throw new Error('full');
       const out = first.exchangeCode({ code: approved.code, clientId: client.id, redirectUri: 'https://a.example/cb', verifier, resource });
@@ -363,5 +364,113 @@ describe('OAuthStore requests, codes and tokens', () => {
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
+  });
+});
+
+describe('OAuthStore approved pool upkeep', () => {
+  const DAY = 86_400_000;
+  const verifier = 'dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk';
+  const challenge = 'E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM';
+  const resource = `${ISSUER}/mcp`;
+  const redirectUri = 'https://a.example/cb';
+  const setup = () => {
+    const t = { now: 1_700_000_000_000 };
+    const db = new DatabaseSync(':memory:');
+    const store = new OAuthStore(db, () => t.now);
+    const approve = (clientId: string) => store.approve({ clientId, redirectUri, codeChallenge: challenge, resource, state: null });
+    /** Registers, approves and exchanges: an app connected the normal way. */
+    const connect = (issuer = ISSUER) => {
+      const client = store.registerClient(reg(), issuer).client;
+      const approved = approve(client.id);
+      if (!approved.ok) throw new Error('full');
+      const out = store.exchangeCode({ code: approved.code, clientId: client.id, redirectUri, verifier, resource });
+      if (!out.ok) throw new Error('exchange');
+      return { client, tokens: out.tokens };
+    };
+    return { t, db, store, approve, connect };
+  };
+
+  it('counts only approved clients with a live grant toward the 20', () => {
+    const { store, approve, connect } = setup();
+    const apps = Array.from({ length: 20 }, () => connect());
+    const next = store.registerClient(reg(), ISSUER).client;
+    expect(approve(next.id)).toEqual({ ok: false, error: 'full' });
+    // Revoking the app's token drops its only grant; the client stays approved but no longer counts.
+    store.revokeToken(apps[0]!.tokens.refreshToken, apps[0]!.client.id);
+    expect(store.getClient(apps[0]!.client.id)?.approvedAt).not.toBeNull();
+    expect(approve(next.id)).toMatchObject({ ok: true });
+  });
+
+  it('prunes approved clients idle for over 30 days, and grants idle that long', () => {
+    const { t, db, store, connect } = setup();
+    const idle = connect();
+    const kept = connect();
+    const stale = kept.tokens;
+    t.now += 29 * DAY;
+    const fresh = store.refresh({ refreshToken: stale.refreshToken, clientId: kept.client.id, resource });
+    if (!fresh.ok) throw new Error('refresh');
+    t.now += 2 * DAY;
+    store.registerClient(reg(), ISSUER);
+    expect(store.getClient(idle.client.id)).toBeNull();
+    expect(store.verifyAccess(idle.tokens.accessToken)).toBeNull();
+    expect(store.getClient(kept.client.id)).not.toBeNull();
+    // A second grant for the kept app, 31 days in; the first one isn't used again.
+    const approved = store.approve({ clientId: kept.client.id, redirectUri, codeChallenge: challenge, resource, state: null });
+    if (!approved.ok) throw new Error('full');
+    const second = store.exchangeCode({ code: approved.code, clientId: kept.client.id, redirectUri, verifier, resource });
+    if (!second.ok) throw new Error('exchange');
+    t.now += 29 * DAY;
+    store.registerClient(reg(), ISSUER);
+    // The first grant, last used 31 days ago, is gone; the second (29 days) stays and still refreshes.
+    expect(db.prepare('SELECT COUNT(*) AS n FROM oauth_grants WHERE client_id = ?').get(kept.client.id)).toEqual({ n: 1 });
+    expect(store.refresh({ refreshToken: fresh.tokens.refreshToken, clientId: kept.client.id, resource })).toMatchObject({ ok: false });
+    expect(store.refresh({ refreshToken: second.tokens.refreshToken, clientId: kept.client.id, resource })).toMatchObject({ ok: true });
+  });
+
+  it('prunes an approved client that never got a grant once its approval is 31 days old', () => {
+    const { t, store, approve } = setup();
+    const client = store.registerClient(reg(), ISSUER).client;
+    expect(approve(client.id)).toMatchObject({ ok: true });
+    t.now += 30 * DAY;
+    store.registerClient(reg(), ISSUER);
+    expect(store.getClient(client.id)).not.toBeNull();
+    t.now += DAY;
+    store.registerClient(reg(), ISSUER);
+    expect(store.getClient(client.id)).toBeNull();
+  });
+
+  it('prunes from approve() too, but never the client being approved', () => {
+    const { t, store, approve } = setup();
+    const [first, second] = [store.registerClient(reg(), ISSUER).client, store.registerClient(reg(), ISSUER).client];
+    expect(approve(first.id)).toMatchObject({ ok: true });
+    expect(approve(second.id)).toMatchObject({ ok: true });
+    t.now += 31 * DAY;
+    expect(approve(second.id)).toMatchObject({ ok: true });
+    expect(store.getClient(first.id)).toBeNull();
+    expect(store.getClient(second.id)).not.toBeNull();
+  });
+
+  it('removes clients registered under another issuer, with their tokens', () => {
+    const { store, connect } = setup();
+    const old = connect('https://old.example');
+    const current = connect();
+    store.pruneOtherIssuers(ISSUER);
+    expect(store.getClient(old.client.id)).toBeNull();
+    expect(store.verifyAccess(old.tokens.accessToken)).toBeNull();
+    expect(store.getClient(current.client.id)).not.toBeNull();
+    expect(store.verifyAccess(current.tokens.accessToken)).not.toBeNull();
+  });
+
+  it('opens a database made before clients had an issuer, and treats its clients as another issuer', () => {
+    const db = new DatabaseSync(':memory:');
+    db.exec(`CREATE TABLE oauth_clients (id TEXT PRIMARY KEY, name TEXT NOT NULL, redirect_uris TEXT NOT NULL,
+      auth_method TEXT NOT NULL, secret_hash TEXT, created_at INTEGER NOT NULL, approved_at INTEGER)`);
+    db.prepare('INSERT INTO oauth_clients VALUES (?, ?, ?, ?, ?, ?, ?)').run('legacy', 'Old', '["https://a.example/cb"]', 'none', null, 1, 1);
+    const store = new OAuthStore(db);
+    expect(store.getClient('legacy')).not.toBeNull();
+    const fresh = store.registerClient(reg(), ISSUER).client;
+    store.pruneOtherIssuers(ISSUER);
+    expect(store.getClient('legacy')).toBeNull();
+    expect(store.getClient(fresh.id)).not.toBeNull();
   });
 });

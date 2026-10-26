@@ -17,7 +17,7 @@ const REDIRECT = 'https://app.example:8443/cb';
 
 function seed(name = HOSTILE) {
   const store = new OAuthStore(new DatabaseSync(':memory:'));
-  const { client } = store.registerClient({ name, redirectUris: [REDIRECT], authMethod: 'none' });
+  const { client } = store.registerClient({ name, redirectUris: [REDIRECT], authMethod: 'none' }, 'https://kordn.example');
   const verifier = 'v'.repeat(64);
   const request = { clientId: client.id, redirectUri: REDIRECT, codeChallenge: createHash('sha256').update(verifier).digest('base64url'), resource: RESOURCE, state: null };
   const approved = store.approve(request);

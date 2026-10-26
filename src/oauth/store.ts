@@ -120,7 +120,8 @@ export class OAuthStore {
         auth_method TEXT NOT NULL,
         secret_hash TEXT,
         created_at INTEGER NOT NULL,
-        approved_at INTEGER
+        approved_at INTEGER,
+        issuer TEXT NOT NULL
       );
       CREATE TABLE IF NOT EXISTS oauth_requests (
         id_hash TEXT PRIMARY KEY,
@@ -154,31 +155,38 @@ export class OAuthStore {
         expires_at INTEGER,
         rotated INTEGER NOT NULL DEFAULT 0
       );`);
+    // Databases from before clients had an issuer: '' matches no public URL, so their clients get pruned.
+    const columns = this.db.prepare('PRAGMA table_info(oauth_clients)').all() as unknown as { name: string }[];
+    if (!columns.some((c) => c.name === 'issuer')) this.db.exec("ALTER TABLE oauth_clients ADD COLUMN issuer TEXT NOT NULL DEFAULT ''");
   }
 
   static open(path: string, now?: () => number): OAuthStore {
     return new OAuthStore(openPrivateDatabase(path), now);
   }
 
-  /** Prunes and evicts unapproved clients as needed. The secret is returned only here, and only for secret auth methods. */
-  registerClient(reg: ClientRegistration): { client: StoredClient; secret: string | null } {
+  /**
+   * Prunes idle approved clients and grants, and prunes and evicts unapproved clients as needed.
+   * `issuer` is the public URL the client registered under. The secret is returned only here, and only for secret auth methods.
+   */
+  registerClient(reg: ClientRegistration, issuer: string): { client: StoredClient; secret: string | null } {
     const id = newSecret();
     const secret = reg.authMethod === 'none' ? null : newSecret();
     const createdAt = this.now();
-    this.db.exec('BEGIN IMMEDIATE');
-    try {
+    this.tx(() => {
+      this.pruneIdle(createdAt);
       this.db.prepare('DELETE FROM oauth_clients WHERE approved_at IS NULL AND created_at < ?').run(createdAt - UNAPPROVED_TTL_MS);
-      this.db.prepare('INSERT INTO oauth_clients (id, name, redirect_uris, auth_method, secret_hash, created_at) VALUES (?, ?, ?, ?, ?, ?)')
-        .run(id, reg.name, JSON.stringify(reg.redirectUris), reg.authMethod, secret === null ? null : hex(secret), createdAt);
+      this.db.prepare('INSERT INTO oauth_clients (id, name, redirect_uris, auth_method, secret_hash, created_at, issuer) VALUES (?, ?, ?, ?, ?, ?, ?)')
+        .run(id, reg.name, JSON.stringify(reg.redirectUris), reg.authMethod, secret === null ? null : hex(secret), createdAt, issuer);
       this.db.prepare(`DELETE FROM oauth_clients WHERE approved_at IS NULL AND id IN (
         SELECT id FROM oauth_clients WHERE approved_at IS NULL ORDER BY created_at DESC, rowid DESC LIMIT -1 OFFSET ?)`)
         .run(UNAPPROVED_POOL);
-      this.db.exec('COMMIT');
-    } catch (error) {
-      this.db.exec('ROLLBACK');
-      throw error;
-    }
+    });
     return { client: { id, name: reg.name, redirectUris: [...reg.redirectUris], authMethod: reg.authMethod, createdAt, approvedAt: null }, secret };
+  }
+
+  /** Deletes clients registered under any other public URL, with their grants and tokens: a new URL breaks their redirects. */
+  pruneOtherIssuers(issuer: string): void {
+    this.tx(() => this.db.prepare('DELETE FROM oauth_clients WHERE issuer != ?').run(issuer));
   }
 
   getClient(id: string): StoredClient | null {
@@ -230,7 +238,7 @@ export class OAuthStore {
   }
 
   /**
-   * Marks the client approved and issues a 60 s code. 'full' when 20 other clients are already approved.
+   * Marks the client approved and issues a 60 s code. 'full' when 20 other approved clients hold a live grant.
    * Throws if the client no longer exists (it may have been evicted while the request was pending).
    */
   approve(req: AuthorizeRequest): { ok: true; code: string } | { ok: false; error: 'full' } {
@@ -238,12 +246,15 @@ export class OAuthStore {
     const now = this.now();
     return this.tx(() => {
       if (!this.getClient(req.clientId)) throw new Error('Unknown OAuth client');
-      const others = this.db.prepare('SELECT COUNT(*) AS n FROM oauth_clients WHERE approved_at IS NOT NULL AND id != ?').get(req.clientId) as unknown as { n: number };
-      if (others.n >= APPROVED_POOL) return { ok: false as const, error: 'full' as const };
-      this.db.prepare('UPDATE oauth_clients SET approved_at = COALESCE(approved_at, ?) WHERE id = ?').run(now, req.clientId);
+      this.pruneIdle(now, req.clientId);
       // Grants whose code expired unused never got tokens; drop them.
       this.db.prepare(`DELETE FROM oauth_grants WHERE NOT EXISTS (SELECT 1 FROM oauth_tokens WHERE grant_id = oauth_grants.id)
         AND NOT EXISTS (SELECT 1 FROM oauth_codes WHERE grant_id = oauth_grants.id AND expires_at > ?)`).run(now);
+      // An approved app with no live grant can't call kordn, so it doesn't hold a place.
+      const others = this.db.prepare(`SELECT COUNT(*) AS n FROM oauth_clients c WHERE approved_at IS NOT NULL AND id != ?
+        AND EXISTS (SELECT 1 FROM oauth_grants WHERE client_id = c.id)`).get(req.clientId) as unknown as { n: number };
+      if (others.n >= APPROVED_POOL) return { ok: false as const, error: 'full' as const };
+      this.db.prepare('UPDATE oauth_clients SET approved_at = COALESCE(approved_at, ?) WHERE id = ?').run(now, req.clientId);
       const grantId = newSecret();
       this.db.prepare('INSERT INTO oauth_grants (id, client_id, resource, created_at) VALUES (?, ?, ?, ?)').run(grantId, req.clientId, req.resource, now);
       this.db.prepare('INSERT INTO oauth_codes (hash, grant_id, redirect_uri, code_challenge, expires_at) VALUES (?, ?, ?, ?, ?)')
@@ -361,6 +372,18 @@ export class OAuthStore {
 
   private deleteGrant(grantId: string): void {
     this.db.prepare('DELETE FROM oauth_grants WHERE id = ?').run(grantId);
+  }
+
+  /**
+   * Approved clients whose last activity (approval, or a grant's last use) is over 30 days old, then grants idle
+   * that long: refresh() would refuse them anyway. After this every remaining grant is live. Runs inside a transaction.
+   */
+  private pruneIdle(now: number, keepClientId: string | null = null): void {
+    const cutoff = now - REFRESH_IDLE_MS;
+    this.db.prepare(`DELETE FROM oauth_clients WHERE approved_at IS NOT NULL AND id IS NOT ? AND MAX(approved_at,
+      COALESCE((SELECT MAX(COALESCE(last_used_at, created_at)) FROM oauth_grants WHERE client_id = oauth_clients.id), 0)) < ?`)
+      .run(keepClientId, cutoff);
+    this.db.prepare('DELETE FROM oauth_grants WHERE COALESCE(last_used_at, created_at) < ?').run(cutoff);
   }
 
   private tx<T>(fn: () => T): T {

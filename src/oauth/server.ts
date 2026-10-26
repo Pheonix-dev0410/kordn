@@ -115,6 +115,8 @@ export function createOAuthServer(options: OAuthServerOptions): OAuthServer {
   const resource = new URL('/mcp', issuer);
   const resourceString = resource.href;
   if (!parsePublicUrl(issuer)) throw new Error('publicUrl must be an https origin, or http on localhost');
+  // Apps registered under an earlier public URL (a quick tunnel's, say) can no longer reach us.
+  store.pruneOtherIssuers(issuer);
   const registrations = new WindowLimit(10, 60_000, now);
   const ownerFailures = new WindowLimit(OWNER_FAILURES_PER_MINUTE, 60_000, now);
 
@@ -193,7 +195,7 @@ export function createOAuthServer(options: OAuthServerOptions): OAuthServer {
     }
     const parsed = parseClientMetadata(body);
     if (!parsed.ok) return fail(400, parsed.error, parsed.description);
-    const { client, secret } = store.registerClient(parsed.value);
+    const { client, secret } = store.registerClient(parsed.value, issuer);
     return json(201, {
       client_id: client.id,
       client_id_issued_at: Math.floor(client.createdAt / 1000),
@@ -322,7 +324,7 @@ export function createOAuthServer(options: OAuthServerOptions): OAuthServer {
       return showConsent(401, client, req, ['Wrong KORDN_TOKEN.']);
     }
     const approved = store.approve(req);
-    if (!approved.ok) return errorPage(409, 'kordn already has 20 connected apps. Revoke one in the admin UI first.');
+    if (!approved.ok) return errorPage(409, 'kordn already has 20 connected apps. Revoke one under Apps in the admin UI (start kordn with --admin), then try again.');
     audit('oauth.approved', app);
     return redirectBack(req.redirectUri, { code: approved.code }, req.state);
   }
