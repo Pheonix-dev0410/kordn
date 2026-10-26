@@ -5,11 +5,13 @@ import { z } from 'zod';
 export const MAX_AMOUNT_MINOR = 100_000_000_000;
 
 export const AgentId = z.string().regex(/^[a-z0-9][a-z0-9-]{0,62}$/);
-export const ResourceId = z.string().regex(/^mock-bank:[a-z0-9-]{1,64}$/);
+// The provider, then your name for the account: mock-bank:checking-01, razorpayx:main, stripe:main.
+export const ResourceId = z.string().regex(/^(mock-bank|razorpayx|stripe):[a-z0-9-]{1,64}$/);
 export const PayeeId = z.string().regex(/^[a-z0-9][a-z0-9-]{0,63}$/);
 export const IdempotencyKey = z.string().regex(/^[A-Za-z0-9_-]{8,128}$/);
 export const TransferRef = z.string().regex(/^tr_[A-Za-z0-9_-]{16,64}$/);
-export const Currency = z.literal('USD');
+export const Currency = z.enum(['USD', 'INR']);
+export type Currency = z.infer<typeof Currency>;
 export const AmountMinor = z.number().int().positive().max(MAX_AMOUNT_MINOR);
 export const SignedAmountMinor = z.number().int().min(-MAX_AMOUNT_MINOR).max(MAX_AMOUNT_MINOR);
 export const Digest = z.string().regex(/^sha256:[0-9a-f]{64}$/);
@@ -150,7 +152,7 @@ export const TOOL_OUTPUTS = {
     transactions: z
       .array(
         z.strictObject({
-          transactionId: z.string().regex(/^txn-[0-9]{3,}$/),
+          transactionId: z.string().regex(/^[A-Za-z0-9_-]{1,64}$/),
           amountMinor: SignedAmountMinor,
           currency: Currency,
           date: z.iso.date(),

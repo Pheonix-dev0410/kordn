@@ -61,7 +61,7 @@ describe('admin approvals', () => {
     const s = await login(server);
     const page = (await s.get('/approvals')).body;
     expect(page).toContain('utilities');
-    expect(page).toContain('$90.00');
+    expect(page).toContain('90.00 USD');
     expect(page).toContain(p.expiresAt);
     expect(page).toMatch(/Policy version[^<]*<\/th>/);
     expect(page).toContain(`value="${p.reservationId}"`);
@@ -175,7 +175,7 @@ describe('admin approvals', () => {
     expect(page).not.toContain('-1.-5');
     expect(page).not.toContain('NaN');
     expect(page).toContain('name="digest" value="digest-good"');
-    expect(page).toContain('$90.00');
+    expect(page).toContain('90.00 USD');
   });
 
   it('renders hostile pending fields as literal text', async () => {

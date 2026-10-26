@@ -115,6 +115,7 @@ export function loginPage(ctx: PageContext): Html {
 export interface PolicyView {
   policyId: string;
   resourceId: string;
+  currency: string;
   version: number;
   values: PolicyFormValues;
 }
@@ -124,7 +125,7 @@ export function policyPage(ctx: PageContext & { csrf: string }, view: PolicyView
     ctx,
     'Limits',
     html`<p>Policy <code>${view.policyId}</code>, version ${view.version}, for <code>${view.resourceId}</code>.
-      Tighter limits apply to new requests immediately.</p>
+      Amounts are in ${view.currency}. Tighter limits apply to new requests immediately.</p>
     <form method="post" action="/policy">
       <input type="hidden" name="csrf" value="${ctx.csrf}">
       <input type="hidden" name="version" value="${view.version}">
@@ -147,7 +148,7 @@ export function approvalsPage(ctx: PageContext & { csrf: string }, pending: read
     return html`<tr>
       <td><code>${p.agentId}</code></td>
       <td><code>${p.payeeId}</code></td>
-      <td>${valid ? html`$${formatUsd(p.amountMinor)} ${p.currency}` : html`<strong>Invalid amount</strong>`}</td>
+      <td>${valid ? html`${formatUsd(p.amountMinor)} ${p.currency}` : html`<strong>Invalid amount</strong>`}</td>
       <td><code>${p.resourceId}</code></td>
       <td>${p.policyVersion}</td>
       <td>${p.expiresAt}</td>

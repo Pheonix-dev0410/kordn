@@ -1,12 +1,12 @@
 import { Policy } from '../schema.js';
 
 // Exact parsing of admin form input. Money never goes through floats: "75.01" is split as
-// text into dollars and cents, so 75.01 can't become 7500.999.
+// text into whole units and cents (or paise), so 75.01 can't become 7500.999.
 
 const USD = /^(0|[1-9][0-9]{0,12})(?:\.([0-9]{1,2}))?$/;
 const COUNT = /^(0|[1-9][0-9]{0,8})$/;
 
-/** Plain dollars with at most two decimals, to integer cents. Null for anything else. */
+/** A plain amount with at most two decimals, to integer minor units. Null for anything else. */
 export function parseUsd(text: string): number | null {
   const match = USD.exec(text.trim());
   if (!match) return null;
@@ -38,9 +38,9 @@ export class Form {
 export const POLICY_FIELDS = [
   { name: 'readsPerHour', label: 'Reads per hour', kind: 'count' },
   { name: 'transfersPerDay', label: 'Transfers per 24 hours', kind: 'count' },
-  { name: 'maxSingleUsd', label: 'Largest single transfer (USD)', kind: 'usd' },
-  { name: 'maxTotalUsd', label: 'Total transferred per 24 hours (USD)', kind: 'usd' },
-  { name: 'approvalAboveUsd', label: 'Ask me to approve transfers above (USD)', kind: 'usd' },
+  { name: 'maxSingleUsd', label: 'Largest single transfer', kind: 'usd' },
+  { name: 'maxTotalUsd', label: 'Total transferred per 24 hours', kind: 'usd' },
+  { name: 'approvalAboveUsd', label: 'Ask me to approve transfers above', kind: 'usd' },
 ] as const;
 
 export type PolicyField = (typeof POLICY_FIELDS)[number]['name'];
@@ -81,7 +81,7 @@ export function readPolicyForm(
     if (value === null) {
       errors.push(
         field.kind === 'usd'
-          ? `${field.label}: enter dollars like 75 or 75.01 (no signs, exponents or more than two decimals).`
+          ? `${field.label}: enter an amount like 75 or 75.01 (no signs, exponents or more than two decimals).`
           : `${field.label}: enter a whole number like 5.`,
       );
     } else {

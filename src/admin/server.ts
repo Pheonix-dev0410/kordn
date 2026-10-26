@@ -104,6 +104,7 @@ export async function startAdminServer(options: AdminServerOptions): Promise<Adm
     const page = policyPage(await userContext(r, errors), {
       policyId: policy.policyId,
       resourceId: policy.resourceId,
+      currency: policy.transfers.currency,
       version,
       values: values ?? policyFormValues(policy),
     });
