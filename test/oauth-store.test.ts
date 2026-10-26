@@ -237,6 +237,31 @@ describe('OAuthStore requests, codes and tokens', () => {
     expect(store.refresh({ refreshToken: r.tokens.refreshToken, clientId: client.id, resource })).toMatchObject({ ok: false, error: 'invalid_grant' });
   });
 
+  it('detects replay of a token rotated several times ago', () => {
+    const { store, client, issue } = setup();
+    const r0 = issue();
+    const r1 = store.refresh({ refreshToken: r0.refreshToken, clientId: client.id, resource });
+    if (!r1.ok) throw new Error('r1');
+    const r2 = store.refresh({ refreshToken: r1.tokens.refreshToken, clientId: client.id, resource });
+    if (!r2.ok) throw new Error('r2');
+    expect(store.refresh({ refreshToken: r0.refreshToken, clientId: client.id, resource }))
+      .toEqual({ ok: false, error: 'invalid_grant', reused: store.getClient(client.id) });
+    expect(store.verifyAccess(r2.tokens.accessToken)).toBeNull();
+    expect(store.refresh({ refreshToken: r2.tokens.refreshToken, clientId: client.id, resource })).toMatchObject({ ok: false });
+  });
+
+  it('kills the grant when a rotated token is replayed with the wrong client or resource', () => {
+    const { store, client, issue } = setup();
+    const other = store.registerClient(reg()).client;
+    for (const over of [{ clientId: other.id }, { resource: 'https://x/mcp' }]) {
+      const old = issue();
+      const next = store.refresh({ refreshToken: old.refreshToken, clientId: client.id, resource });
+      if (!next.ok) throw new Error('next');
+      expect(store.refresh({ refreshToken: old.refreshToken, clientId: client.id, resource, ...over })).toMatchObject({ ok: false, error: 'invalid_grant' });
+      expect(store.verifyAccess(next.tokens.accessToken)).toBeNull();
+    }
+  });
+
   it('refuses refresh for the wrong client or resource, and for unknown clients', () => {
     const { store, client, issue } = setup();
     const other = store.registerClient(reg()).client;

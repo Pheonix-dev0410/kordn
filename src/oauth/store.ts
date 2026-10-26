@@ -267,24 +267,26 @@ export class OAuthStore {
   refresh(input: { refreshToken: string; clientId: string; resource: string }):
     { ok: true; tokens: IssuedTokens } | { ok: false; error: TokenError; reused?: StoredClient } {
     return this.tx(() => {
-      const client = this.getClient(input.clientId);
-      if (!client) return { ok: false as const, error: 'invalid_client' as const };
       const fail = { ok: false as const, error: 'invalid_grant' as const };
       const row = this.db.prepare(`SELECT t.hash, t.grant_id, t.rotated, g.client_id, g.resource, g.created_at, g.last_used_at
         FROM oauth_tokens t JOIN oauth_grants g ON g.id = t.grant_id WHERE t.hash = ? AND t.kind = 'refresh'`)
         .get(hex(input.refreshToken)) as unknown as RefreshRow | undefined;
-      if (!row || row.client_id !== client.id || row.resource !== input.resource) return fail;
-      if (row.rotated) {
+      // Replay of any rotated token kills the grant, whatever client or resource accompanies it.
+      if (row?.rotated) {
+        const owner = this.getClient(row.client_id);
         this.deleteGrant(row.grant_id);
-        return { ...fail, reused: client };
+        return owner ? { ...fail, reused: owner } : fail;
       }
+      const client = this.getClient(input.clientId);
+      if (!client) return { ok: false as const, error: 'invalid_client' as const };
+      if (!row || row.client_id !== client.id || row.resource !== input.resource) return fail;
       const now = this.now();
       if (now - (row.last_used_at ?? row.created_at) > REFRESH_IDLE_MS) {
         this.deleteGrant(row.grant_id);
         return fail;
       }
-      // Keep only the newest rotated token for replay detection; drop spent access tokens.
-      this.db.prepare("DELETE FROM oauth_tokens WHERE grant_id = ? AND ((kind = 'refresh' AND rotated = 1) OR (kind = 'access' AND expires_at <= ?))").run(row.grant_id, now);
+      // Rotated refresh tokens stay until the grant goes, so any old replay is detected; drop spent access tokens.
+      this.db.prepare("DELETE FROM oauth_tokens WHERE grant_id = ? AND kind = 'access' AND expires_at <= ?").run(row.grant_id, now);
       this.db.prepare('UPDATE oauth_tokens SET rotated = 1 WHERE hash = ?').run(row.hash);
       this.db.prepare('UPDATE oauth_grants SET last_used_at = ? WHERE id = ?').run(now, row.grant_id);
       return { ok: true as const, tokens: this.issue(row.grant_id) };
