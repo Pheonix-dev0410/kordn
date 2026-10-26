@@ -4,7 +4,7 @@ A firewall for AI agents. kordn is an MCP server that sits between an agent and 
 
 v0.1 protects a mock bank with fake money only. Don't connect it to real accounts.
 
-> Status: in development. The backend policy, ledger, audit log, mock adapter, and guardian are implemented. The MCP server, admin UI, and sandbox are still being built ([roadmap](../../issues/19)). See the [backend contract](docs/backend.md) for integration and recovery details.
+> Status: in development. The backend policy, ledger, audit log, mock adapter, guardian, and admin UI are implemented. The MCP server and sandbox are still being built ([roadmap](../../issues/19)). See the [backend contract](docs/backend.md) for integration and recovery details.
 
 ## Setup
 

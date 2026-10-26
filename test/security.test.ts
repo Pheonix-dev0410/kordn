@@ -83,22 +83,22 @@ describe('security regression probes', () => {
       { ...args, payeeId: "utilities'; DROP TABLE policies;--" },
       { ...args, resourceId: 'mock-bank:other' }, { ...args, agentId: 'other-agent' },
       JSON.parse(JSON.stringify(args).replace(/}$/, ',"__proto__":{"admin":true}}'))];
-    for (const attack of attacks) await expect(h.guardian.handleCall(h.policy.agentId, tool, attack)).rejects.toHaveProperty('code');
+    for (const attack of attacks) await expect(h.guardian.handleCall(h.policy.agentId, tool, attack)).resolves.toMatchObject({ ok: false, error: { code: expect.any(String) } });
     expect(execute).not.toHaveBeenCalled();
     expect(h.ledger.list()).toHaveLength(0);
-    expect(JSON.stringify(h.guardian.listActivity())).not.toContain('secret-marker');
-    expect(h.guardian.getPolicy().policy.agentId).toBe(fixture.agentId);
+    expect(JSON.stringify(await h.guardian.listActivity())).not.toContain('secret-marker');
+    expect((await h.guardian.getPolicy()).policy.agentId).toBe(fixture.agentId);
   });
 
   it('executes only once when two approvals race with the same nonce', async () => {
     h = harness();
     await propose(h, 0, 8000);
-    const pending = h.guardian.listPending()[0]!;
+    const pending = (await h.guardian.listPending())[0]!;
     const results = await Promise.allSettled([
-      h.guardian.approve(pending.id, pending.digest, pending.nonce!),
-      h.guardian.approve(pending.id, pending.digest, pending.nonce!),
+      h.guardian.approve(pending.reservationId, pending.digest, pending.nonce!),
+      h.guardian.approve(pending.reservationId, pending.digest, pending.nonce!),
     ]);
-    expect(results.filter((r) => r.status === 'fulfilled')).toHaveLength(1);
+    expect(results.filter((r) => r.status === 'fulfilled' && r.value.ok)).toHaveLength(1);
     expect((await h.bank.getBalance(h.policy.resourceId)).balanceMinor).toBe(482315 - 8000);
     expect(h.ledger.audit.verifyChain()).toBe(true);
   });

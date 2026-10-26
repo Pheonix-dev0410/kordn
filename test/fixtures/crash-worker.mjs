@@ -2,7 +2,8 @@ import { join } from 'node:path';
 import { Ledger } from '../../dist/ledger.js';
 import { Guardian } from '../../dist/guardian.js';
 import { FIXTURE_EPOCH_MS, MockBankAdapter } from '../../dist/mock-bank.js';
-import { serveGuardian } from '../../dist/socket.js';
+import { serveGuardianSocket } from '../../dist/guardian-socket.js';
+import { chmodSync } from 'node:fs';
 
 const [dir, stage] = process.argv.slice(2);
 const clock = { nowMs: () => FIXTURE_EPOCH_MS };
@@ -10,7 +11,10 @@ const ledger = new Ledger(join(dir, 'ledger.sqlite'), clock);
 const bank = new MockBankAdapter(join(dir, 'bank.sqlite'), clock);
 const agentId = 'sandbox-demo-01';
 if (stage === 'socket') {
-  await serveGuardian(new Guardian(ledger, bank, agentId), join(dir, 'guardian.sock'));
+  const guardian = new Guardian(ledger, bank, agentId);
+  await guardian.reconcile();
+  await serveGuardianSocket(guardian, agentId, join(dir, 'guardian.sock'));
+  chmodSync(join(dir, 'guardian.sock'), 0o600);
   process.send({ stage });
 } else {
   const admission = ledger.admit(agentId, {

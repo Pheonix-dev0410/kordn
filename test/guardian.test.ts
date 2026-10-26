@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { Ledger } from '../src/ledger.js';
 import { harness, propose, transfer } from './helpers.js';
 import { join } from 'node:path';
+import { APPROVAL_TTL_SEC } from '../src/schema.js';
 
 let h: ReturnType<typeof harness>;
 afterEach(() => { vi.restoreAllMocks(); h?.close(); });
@@ -25,10 +26,10 @@ describe('guardian', () => {
   it('rejects unknown actions and unexpected fields without reaching the adapter', async () => {
     h = harness();
     const spy = vi.spyOn(h.bank, 'execute');
-    await expect(h.guardian.handleCall(h.policy.agentId, 'shell', {})).rejects.toMatchObject({ code: 'UNKNOWN_ACTION' });
-    await expect(h.guardian.handleCall(h.policy.agentId, 'af_get_balance', { resourceId: h.policy.resourceId, agentId: 'other' })).rejects.toMatchObject({ code: 'INVALID_ARGUMENTS' });
+    await expect(h.guardian.handleCall(h.policy.agentId, 'shell', {})).resolves.toMatchObject({ ok: false, error: { code: 'UNKNOWN_ACTION' } });
+    await expect(h.guardian.handleCall(h.policy.agentId, 'af_get_balance', { resourceId: h.policy.resourceId, agentId: 'other' })).resolves.toMatchObject({ ok: false, error: { code: 'INVALID_ARGUMENTS' } });
     expect(spy).not.toHaveBeenCalled();
-    expect(h.guardian.listActivity({ event: 'policy.denied' })).toHaveLength(2);
+    expect(await h.guardian.listActivity({ events: ['policy.denied'] })).toHaveLength(2);
   });
 
   it('binds approval to the digest and one-use nonce', async () => {
@@ -36,45 +37,45 @@ describe('guardian', () => {
     const result = await propose(h, 0, 8000);
     expect(result.state).toBe('pending_approval');
     expect(result).not.toHaveProperty('nonce');
-    const r = h.guardian.listPending()[0]!;
-    await expect(h.guardian.approve(r.id, 'stale-digest', r.nonce!)).rejects.toMatchObject({ code: 'INVALID_ARGUMENTS' });
-    await expect(h.guardian.approve(r.id, r.digest, 'wrong-nonce')).rejects.toMatchObject({ code: 'INVALID_ARGUMENTS' });
-    expect((await h.guardian.approve(r.id, r.digest, r.nonce!)).state).toBe('succeeded');
-    await expect(h.guardian.approve(r.id, r.digest, r.nonce!)).rejects.toMatchObject({ code: 'INVALID_ARGUMENTS' });
+    const r = (await h.guardian.listPending())[0]!;
+    await expect(h.guardian.approve(r.reservationId, 'stale-digest', r.nonce!)).resolves.toMatchObject({ ok: false, code: 'STALE_DIGEST' });
+    await expect(h.guardian.approve(r.reservationId, r.digest, 'wrong-nonce')).resolves.toMatchObject({ ok: false, code: 'BAD_NONCE' });
+    expect(await h.guardian.approve(r.reservationId, r.digest, r.nonce!)).toEqual({ ok: true });
+    await expect(h.guardian.approve(r.reservationId, r.digest, r.nonce!)).resolves.toMatchObject({ ok: false, code: 'NOT_PENDING' });
     expect((await h.bank.getBalance(h.policy.resourceId)).balanceMinor).toBe(482315 - 8000);
   });
 
   it('rejects expired approvals and permits explicit rejection only once', async () => {
     h = harness();
     await propose(h, 0, 8000);
-    const r = h.guardian.listPending()[0]!;
-    h.advance(300_000);
-    await expect(h.guardian.approve(r.id, r.digest, r.nonce!)).rejects.toMatchObject({ code: 'APPROVAL_EXPIRED' });
-    expect(h.ledger.get(r.id)?.state).toBe('EXPIRED');
+    const r = (await h.guardian.listPending())[0]!;
+    h.advance(APPROVAL_TTL_SEC * 1000);
+    await expect(h.guardian.approve(r.reservationId, r.digest, r.nonce!)).resolves.toMatchObject({ ok: false, code: 'APPROVAL_EXPIRED' });
+    expect(h.ledger.get(r.reservationId)?.state).toBe('EXPIRED');
     await propose(h, 1, 8000);
-    const next = h.guardian.listPending()[0]!;
-    expect(h.guardian.reject(next.id, next.nonce!).state).toBe('REJECTED');
-    expect(() => h.guardian.reject(next.id, next.nonce!)).toThrow();
+    const next = (await h.guardian.listPending())[0]!;
+    expect(await h.guardian.reject(next.reservationId, next.nonce!)).toEqual({ ok: true });
+    expect(await h.guardian.reject(next.reservationId, next.nonce!)).toEqual({ ok: false, code: 'NOT_PENDING' });
   });
 
   it('re-checks policy changes at approval and cannot override a hard deny', async () => {
     h = harness();
     await propose(h, 0, 8000);
-    const r = h.guardian.listPending()[0]!;
+    const r = (await h.guardian.listPending())[0]!;
     const policy = structuredClone(h.policy);
     policy.transfers.maxSingleMinor = 7500;
-    h.guardian.updatePolicy(policy, 1);
-    await expect(h.guardian.approve(r.id, r.digest, r.nonce!)).rejects.toMatchObject({ code: 'SINGLE_LIMIT' });
-    expect(h.ledger.get(r.id)?.state).toBe('REJECTED');
+    await h.guardian.updatePolicy(policy, 1);
+    await expect(h.guardian.approve(r.reservationId, r.digest, r.nonce!)).resolves.toMatchObject({ ok: false, code: 'SINGLE_LIMIT' });
+    expect(h.ledger.get(r.reservationId)?.state).toBe('REJECTED');
   });
 
   it('denies after revoke and rejects pending approvals', async () => {
     h = harness();
     await propose(h, 0, 8000);
-    const r = h.guardian.listPending()[0]!;
-    h.guardian.revoke(h.policy.agentId);
-    expect(h.guardian.listPending()).toHaveLength(0);
-    await expect(h.guardian.approve(r.id, r.digest, r.nonce!)).rejects.toMatchObject({ code: 'INVALID_ARGUMENTS' });
+    const r = (await h.guardian.listPending())[0]!;
+    await h.guardian.revoke(h.policy.agentId);
+    expect(await h.guardian.listPending()).toHaveLength(0);
+    await expect(h.guardian.approve(r.reservationId, r.digest, r.nonce!)).resolves.toMatchObject({ ok: false, code: 'NOT_PENDING' });
     await expect(propose(h, 1)).rejects.toMatchObject({ code: 'SESSION_REVOKED' });
   });
 
@@ -124,7 +125,7 @@ describe('guardian', () => {
     vi.spyOn(h.bank, 'listTransactions').mockResolvedValue({ transactions: [] });
     await expect(h.guardian.handleCall(h.policy.agentId, 'af_list_transactions', {
       resourceId: h.policy.resourceId, fromDate: '2026-10-01', limit: 5,
-    })).resolves.toEqual({ transactions: [] });
+    })).resolves.toEqual({ ok: true, result: { transactions: [] } });
   });
 
   it('does not overwrite reconciliation if execution returns its lost response later', async () => {
@@ -153,15 +154,15 @@ describe('guardian', () => {
     const unknown = await propose(h, 1);
     h.bank.faults.responseLost = false;
     const expired = await propose(h, 2, 8000);
-    h.advance(300_000);
+    h.advance(APPROVAL_TTL_SEC * 1000);
     const pending = await propose(h, 3, 8000);
-    expect(h.guardian.listPending().map((r) => r.id)).toEqual([pending.transferRef]);
+    expect((await h.guardian.listPending()).map((r) => r.reservationId)).toEqual([pending.transferRef]);
     expect(h.ledger.get(expired.transferRef)?.state).toBe('EXPIRED');
     await h.guardian.reconcile();
     expect(h.ledger.get(unknown.transferRef)?.state).toBe('SUCCEEDED');
-    h.guardian.revoke();
+    await h.guardian.revoke(h.policy.agentId);
     expect(h.ledger.get(pending.transferRef)?.state).toBe('REJECTED');
-    expect(h.guardian.listPending()).toEqual([]);
+    expect(await h.guardian.listPending()).toEqual([]);
     expect(h.ledger.audit.verifyChain()).toBe(true);
   });
 });

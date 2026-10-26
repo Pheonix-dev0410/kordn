@@ -55,12 +55,13 @@ export class AuditLog {
     } catch { return false; }
   }
 
-  list(filter: { agentId?: string; event?: AuditEvent['event']; limit?: number } = {}): AuditEvent[] {
+  list(filter: { agentId?: string; events?: AuditEvent['event'][]; limit?: number } = {}): AuditEvent[] {
     const limit = Math.min(1000, Math.max(1, filter.limit ?? 100));
+    if (filter.events?.length === 0) return [];
+    const events = filter.events ? ` AND json_extract(event_json, '$.event') IN (${filter.events.map(() => '?').join(',')})` : '';
     return this.db.prepare(`SELECT event_json FROM audit_events
       WHERE (? IS NULL OR json_extract(event_json, '$.agent') = ?)
-        AND (? IS NULL OR json_extract(event_json, '$.event') = ?)
-      ORDER BY seq DESC LIMIT ?`).all(filter.agentId ?? null, filter.agentId ?? null,
-        filter.event ?? null, filter.event ?? null, limit).map((r) => AuditEvent.parse(JSON.parse(String(r.event_json))));
+      ${events} ORDER BY seq DESC LIMIT ?`).all(filter.agentId ?? null, filter.agentId ?? null,
+        ...(filter.events ?? []), limit).map((r) => AuditEvent.parse(JSON.parse(String(r.event_json))));
   }
 }

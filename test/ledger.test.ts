@@ -8,11 +8,11 @@ describe('SQLite ledger', () => {
   it('enforces the read limit and slides the window at one hour', async () => {
     h = harness();
     for (let i = 0; i < 5; i++) await h.guardian.handleCall(h.policy.agentId, 'af_get_balance', { resourceId: h.policy.resourceId });
-    await expect(h.guardian.handleCall(h.policy.agentId, 'af_get_balance', { resourceId: h.policy.resourceId })).rejects.toMatchObject({ code: 'FREQUENCY_LIMIT' });
+    await expect(h.guardian.handleCall(h.policy.agentId, 'af_get_balance', { resourceId: h.policy.resourceId })).resolves.toMatchObject({ ok: false, error: { code: 'FREQUENCY_LIMIT' } });
     h.advance(3_600_000 - 1);
-    await expect(h.guardian.handleCall(h.policy.agentId, 'af_get_balance', { resourceId: h.policy.resourceId })).rejects.toMatchObject({ code: 'FREQUENCY_LIMIT' });
+    await expect(h.guardian.handleCall(h.policy.agentId, 'af_get_balance', { resourceId: h.policy.resourceId })).resolves.toMatchObject({ ok: false, error: { code: 'FREQUENCY_LIMIT' } });
     h.advance(1);
-    await expect(h.guardian.handleCall(h.policy.agentId, 'af_get_balance', { resourceId: h.policy.resourceId })).resolves.toHaveProperty('balanceMinor');
+    await expect(h.guardian.handleCall(h.policy.agentId, 'af_get_balance', { resourceId: h.policy.resourceId })).resolves.toMatchObject({ ok: true, result: { balanceMinor: expect.any(Number) } });
   });
 
   it('enforces count and resets completed transfers after 24h', async () => {
@@ -37,7 +37,7 @@ describe('SQLite ledger', () => {
     h = harness();
     const policy = structuredClone(h.policy);
     policy.transfers.maxCalls = 1;
-    h.guardian.updatePolicy(policy, 1);
+    h.ledger.updatePolicy(policy, 1);
     const admission = h.ledger.admit(policy.agentId, transfer());
     if (admission.kind !== 'transfer') throw new Error('missing transfer');
     h.ledger.dispatch(admission.reservation.id);
@@ -73,21 +73,21 @@ describe('SQLite ledger', () => {
     for (let i = 0; i < 60; i++) {
       await h.guardian.handleCall(h.policy.agentId, 'af_get_transfer_status', { transferRef: ref });
     }
-    await expect(h.guardian.handleCall(h.policy.agentId, 'af_get_transfer_status', { transferRef: ref })).rejects.toMatchObject({ code: 'RATE_LIMITED' });
-    await expect(h.guardian.handleCall(h.policy.agentId, 'af_get_balance', { resourceId: h.policy.resourceId })).resolves.toHaveProperty('balanceMinor');
+    await expect(h.guardian.handleCall(h.policy.agentId, 'af_get_transfer_status', { transferRef: ref })).resolves.toMatchObject({ ok: false, error: { code: 'RATE_LIMITED' } });
+    await expect(h.guardian.handleCall(h.policy.agentId, 'af_get_balance', { resourceId: h.policy.resourceId })).resolves.toMatchObject({ ok: true, result: { balanceMinor: expect.any(Number) } });
     h.advance(60_000);
-    await expect(h.guardian.handleCall(h.policy.agentId, 'af_get_transfer_status', { transferRef: ref })).resolves.toHaveProperty('state', 'SUCCEEDED');
+    await expect(h.guardian.handleCall(h.policy.agentId, 'af_get_transfer_status', { transferRef: ref })).resolves.toMatchObject({ ok: true, result: { state: 'SUCCEEDED' } });
     const other = { ...structuredClone(h.policy), agentId: 'other-agent' };
     h.ledger.updatePolicy(other, 0);
     expect(() => h.ledger.admit(other.agentId, { tool: 'af_get_transfer_status', transferRef: ref }))
       .toThrow(expect.objectContaining({ code: 'INVALID_ARGUMENTS' }));
   });
 
-  it('rejects stale policy writes and cannot clear revocation through a policy edit', () => {
+  it('rejects stale policy writes and cannot clear revocation through a policy edit', async () => {
     h = harness();
-    expect(() => h.guardian.updatePolicy(h.policy, 0)).toThrow();
-    h.guardian.revoke();
-    h.guardian.updatePolicy(h.policy, 1);
-    expect(h.guardian.getPolicy().revoked).toBe(true);
+    expect(await h.guardian.updatePolicy(h.policy, 0)).toEqual({ ok: false, code: 'VERSION_CONFLICT' });
+    await h.guardian.revoke(h.policy.agentId);
+    await h.guardian.updatePolicy(h.policy, 1);
+    expect(await h.guardian.isRevoked(h.policy.agentId)).toBe(true);
   });
 });

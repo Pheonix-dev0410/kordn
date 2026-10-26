@@ -4,12 +4,19 @@ import { openPrivateDatabase } from './database.js';
 import { AuditLog } from './audit.js';
 import { requestHash } from './hash.js';
 import { evaluate } from './policy.js';
-import { AuditEvent, BUDGET_STATES, canTransition, Policy } from './schema.js';
-import type { Clock, DenyCode, State, ToolCall, TransferCall, Usage } from './schema.js';
+import { APPROVAL_TTL_SEC, AuditEvent, BUDGET_STATES, canTransition, Policy } from './schema.js';
+import type { Clock, DenyCode, State, ToolCall, TransferCall, TransferReasonCode, Usage } from './schema.js';
+import type { ApprovalError } from './guardian-api.js';
 
 export class GuardianError extends Error {
   constructor(readonly code: DenyCode, message: string = code) { super(message); }
 }
+
+export class ApprovalDecisionError extends Error {
+  constructor(readonly code: ApprovalError) { super(code); }
+}
+
+export class PolicyVersionConflict extends Error {}
 
 export interface Reservation {
   id: string;
@@ -23,7 +30,7 @@ export interface Reservation {
   expiresMs: number;
   digest: string;
   nonce: string | null;
-  reasonCode: DenyCode | null;
+  reasonCode: TransferReasonCode | null;
 }
 
 type Admission = { kind: 'read' } | { kind: 'transfer'; reservation: Reservation; fresh: boolean };
@@ -33,7 +40,7 @@ export class Ledger {
   readonly db: DatabaseSync;
   readonly audit: AuditLog;
 
-  constructor(path: string, readonly clock: Clock = { nowMs: Date.now }, readonly approvalTtlMs = 300_000) {
+  constructor(path: string, readonly clock: Clock = { nowMs: Date.now }, readonly approvalTtlMs = APPROVAL_TTL_SEC * 1000) {
     if (!Number.isSafeInteger(approvalTtlMs) || approvalTtlMs <= 0) throw new Error('invalid approval TTL');
     this.db = openPrivateDatabase(path);
     this.db.exec(`PRAGMA journal_mode=WAL; PRAGMA synchronous=FULL; PRAGMA busy_timeout=5000;
@@ -83,7 +90,7 @@ export class Ledger {
     const policy = Policy.parse(input);
     return this.transaction(() => {
       const previous = this.db.prepare('SELECT * FROM policies WHERE agent_id = ?').get(policy.agentId);
-      if ((previous ? Number(previous.version) : 0) !== expectedVersion) throw new GuardianError('INVALID_ARGUMENTS', 'stale policy version');
+      if ((previous ? Number(previous.version) : 0) !== expectedVersion) throw new PolicyVersionConflict('stale policy version');
       const version = expectedVersion + 1;
       this.db.prepare(`INSERT INTO policies VALUES (?, ?, ?, 0) ON CONFLICT(agent_id)
         DO UPDATE SET version=excluded.version, policy_json=excluded.policy_json`).run(policy.agentId, version, JSON.stringify(policy));
@@ -138,7 +145,7 @@ export class Ledger {
       }
       const id = `tr_${randomUUID().replaceAll('-', '')}`;
       const expiresMs = nowMs + this.approvalTtlMs;
-      const digest = requestHash({ id, call, policyVersion: version, expiresMs });
+      const digest = hash;
       const nonce = randomBytes(32).toString('hex');
       this.db.prepare(`INSERT INTO reservations VALUES (?, ?, ?, ?, ?, 'RESERVED', ?, ?, ?, ?, ?, ?, NULL, ?)`)
         .run(id, agentId, JSON.stringify(call), call.idempotencyKey, hash, version, nowMs, nowMs, expiresMs, digest, nonce, call.amountMinor);
@@ -173,7 +180,7 @@ export class Ledger {
     return { id: String(row.id), agentId: String(row.agent_id), call: JSON.parse(String(row.call_json)),
       requestHash: String(row.request_hash), state: row.state as State, policyVersion: Number(row.policy_version),
       createdMs: Number(row.created_ms), updatedMs: Number(row.updated_ms), expiresMs: Number(row.expires_ms),
-      digest: String(row.digest), nonce: row.nonce === null ? null : String(row.nonce), reasonCode: row.reason_code as DenyCode | null };
+      digest: String(row.digest), nonce: row.nonce === null ? null : String(row.nonce), reasonCode: row.reason_code as TransferReasonCode | null };
   }
 
   get(id: string, agentId?: string): Reservation | null {
@@ -195,7 +202,7 @@ export class Ledger {
       .all(agentId, ...states, ...(expiresBeforeMs === undefined ? [] : [expiresBeforeMs])).map((row) => this.decode(row));
   }
 
-  private transitionInTransaction(id: string, state: State, reason: DenyCode | null = null,
+  private transitionInTransaction(id: string, state: State, reason: TransferReasonCode | null = null,
     event?: AuditEvent['event']): Reservation {
     const r = this.get(id);
     if (!r || !canTransition(r.state, state)) throw new GuardianError('INVALID_ARGUMENTS', 'invalid state transition');
@@ -208,11 +215,12 @@ export class Ledger {
     };
     // The pending nonce remains private to the admin API until consumed.
     if (state === 'PENDING_APPROVAL') this.db.prepare('UPDATE reservations SET nonce=? WHERE id=?').run(r.nonce, id);
-    this.event(r.agentId, event ?? events[state]!, r.call, r.requestHash, r.policyVersion, reason, id);
+    this.event(r.agentId, event ?? events[state]!, r.call, r.requestHash, r.policyVersion,
+      reason === 'ADAPTER_FAILED' ? null : reason, id, { state });
     return this.get(id)!;
   }
 
-  transition(id: string, state: State, reason: DenyCode | null = null, event?: AuditEvent['event']): Reservation {
+  transition(id: string, state: State, reason: TransferReasonCode | null = null, event?: AuditEvent['event']): Reservation {
     return this.transaction(() => this.transitionInTransaction(id, state, reason, event));
   }
 
@@ -239,13 +247,17 @@ export class Ledger {
   decide(id: string, nonce: string, digest: string | null, approve: boolean, agentId: string): Reservation {
     const result = this.transaction(() => {
       const r = this.get(id, agentId);
-      if (!r || r.state !== 'PENDING_APPROVAL' || r.nonce !== nonce || (approve && r.digest !== digest)) {
+      if (!r || r.state !== 'PENDING_APPROVAL') {
         this.denied(agentId, null, null, null, 'INVALID_ARGUMENTS');
-        return new GuardianError('INVALID_ARGUMENTS');
+        return new ApprovalDecisionError(r?.state === 'EXPIRED' ? 'APPROVAL_EXPIRED' : 'NOT_PENDING');
       }
       if (r.expiresMs <= this.clock.nowMs()) {
         this.transitionInTransaction(id, 'EXPIRED', 'APPROVAL_EXPIRED');
-        return new GuardianError('APPROVAL_EXPIRED');
+        return new ApprovalDecisionError('APPROVAL_EXPIRED');
+      }
+      if (r.nonce !== nonce || (approve && r.requestHash !== digest)) {
+        this.denied(agentId, null, null, null, 'INVALID_ARGUMENTS');
+        return new ApprovalDecisionError(r.nonce !== nonce ? 'BAD_NONCE' : 'STALE_DIGEST');
       }
       const { policy, version, revoked } = this.getPolicy(agentId);
       const verdict = evaluate({ agentId, call: r.call, policy, revoked,
@@ -257,7 +269,7 @@ export class Ledger {
       }
       return this.transitionInTransaction(id, approve ? 'APPROVED' : 'REJECTED');
     });
-    if (result instanceof GuardianError) throw result;
+    if (result instanceof GuardianError || result instanceof ApprovalDecisionError) throw result;
     return result;
   }
 

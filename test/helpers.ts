@@ -2,10 +2,10 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import fixture from '../examples/policy.json' with { type: 'json' };
-import { Ledger } from '../src/ledger.js';
+import { GuardianError, Ledger } from '../src/ledger.js';
 import { Guardian } from '../src/guardian.js';
 import { FIXTURE_EPOCH_MS, MockBankAdapter } from '../src/mock-bank.js';
-import { Policy } from '../src/schema.js';
+import { Policy, TOOL_OUTPUTS } from '../src/schema.js';
 import type { TransferCall } from '../src/schema.js';
 
 export function harness(policy = Policy.parse(fixture), timeoutMs = 1000) {
@@ -32,7 +32,11 @@ export function transfer(index = 0, amountMinor = 5000): TransferCall {
     amountMinor, currency: 'USD', idempotencyKey: `request-${String(index).padStart(8, '0')}` };
 }
 
-export function propose(h: ReturnType<typeof harness>, index = 0, amountMinor = 5000) {
+export async function propose(h: ReturnType<typeof harness>, index = 0, amountMinor = 5000) {
   const { tool, ...args } = transfer(index, amountMinor);
-  return h.guardian.handleCall(h.policy.agentId, tool, args) as Promise<{ state: string; transferRef: string; reasonCode: string | null }>;
+  const result = await h.guardian.handleCall(h.policy.agentId, tool, args);
+  if (!result.ok) throw new GuardianError(result.error.code);
+  const output = TOOL_OUTPUTS.af_propose_transfer.parse(result.result);
+  if (!output.transferRef) throw new Error('missing transfer reference');
+  return { ...output, transferRef: output.transferRef };
 }

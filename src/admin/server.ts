@@ -273,7 +273,8 @@ export async function startAdminServer(options: AdminServerOptions): Promise<Adm
     handle(req, res).catch((err: unknown) => {
       // Guardian failures fail closed with a generic message; details stay server-side.
       const status = err instanceof HttpError ? err.status : 503;
-      const message = err instanceof HttpError ? err.message : 'The guardian is unavailable. Nothing was changed.';
+      const message = err instanceof HttpError ? err.message :
+        'The guardian is unavailable. An operation may still be in progress; check activity before retrying.';
       if (res.headersSent) return res.destroy();
       res.statusCode = status;
       res.setHeader('content-type', 'text/plain; charset=utf-8');

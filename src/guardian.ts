@@ -1,30 +1,35 @@
-import { DenyCode, parseToolCall, ToolName, TOOL_OUTPUTS } from './schema.js';
-import type { AdapterResult, AuditEvent, BankAdapter, Policy } from './schema.js';
-import { GuardianError, Ledger } from './ledger.js';
+import { DenyCode, parseToolCall, Policy, ToolName, TOOL_OUTPUTS } from './schema.js';
+import type { AdapterResult, BankAdapter } from './schema.js';
+import type { ActivityFilter, ApprovalResult, CallResult, Guardian as GuardianApi, PendingApproval, PolicyUpdateResult } from './guardian-api.js';
+import { ApprovalDecisionError, GuardianError, Ledger, PolicyVersionConflict } from './ledger.js';
 import type { Reservation } from './ledger.js';
 
 export { GuardianError } from './ledger.js';
 
-export class Guardian {
+export class Guardian implements GuardianApi {
   constructor(readonly ledger: Ledger, private readonly adapter: BankAdapter, readonly agentId: string,
     private readonly timeoutMs = 10_000) {
-    if (!Number.isSafeInteger(timeoutMs) || timeoutMs <= 0) throw new Error('invalid adapter timeout');
+    if (!Number.isSafeInteger(timeoutMs) || timeoutMs <= 0 || timeoutMs > 2 ** 31 - 1) throw new Error('invalid adapter timeout');
   }
 
   private async deadline<T>(operation: () => Promise<T>): Promise<T> {
     let timer: ReturnType<typeof setTimeout> | undefined;
     try {
       return await Promise.race([Promise.resolve().then(operation), new Promise<never>((_, reject) => {
-        timer = setTimeout(() => reject(new GuardianError('INTERNAL_UNAVAILABLE', 'adapter timed out')), this.timeoutMs);
+        timer = setTimeout(() => reject(new GuardianError('INTERNAL_UNAVAILABLE')), this.timeoutMs);
       })]);
     } finally { clearTimeout(timer); }
   }
 
-  async handleCall(agentId: string, tool: unknown, args: unknown): Promise<unknown> {
+  async handleCall(agentId: string, tool: unknown, args: unknown): Promise<CallResult> {
     try {
       if (agentId !== this.agentId) {
-        this.ledger.recordDenied(this.agentId, 'INVALID_ARGUMENTS');
-        throw new GuardianError('INVALID_ARGUMENTS');
+        this.ledger.recordDenied(this.agentId, 'UNKNOWN_ACTION');
+        throw new GuardianError('UNKNOWN_ACTION');
+      }
+      if (this.ledger.getPolicy(agentId).revoked) {
+        this.ledger.recordDenied(agentId, 'SESSION_REVOKED');
+        throw new GuardianError('SESSION_REVOKED');
       }
       const call = parseToolCall(tool, args);
       if (!call) {
@@ -36,8 +41,8 @@ export class Guardian {
       const admission = this.ledger.admit(agentId, call);
       if (admission.kind === 'transfer') {
         const r = admission.reservation;
-        if (!admission.fresh || r.state === 'PENDING_APPROVAL') return this.transferOutput(r);
-        return await this.run(r.id);
+        const result = !admission.fresh || r.state === 'PENDING_APPROVAL' ? this.transferOutput(r) : await this.run(r.id);
+        return { ok: true, result };
       }
       let result: unknown;
       switch (call.tool) {
@@ -46,7 +51,7 @@ export class Guardian {
           const output = TOOL_OUTPUTS.af_list_transactions.parse(await this.deadline(() =>
             this.adapter.listTransactions(call.resourceId, call.fromDate, call.limit)));
           if (output.transactions.length > call.limit || output.transactions.some((tx) => tx.date < call.fromDate)) {
-            throw new GuardianError('INTERNAL_UNAVAILABLE', 'adapter exceeded requested read bounds');
+            throw new GuardianError('INTERNAL_UNAVAILABLE');
           }
           result = output;
           break;
@@ -60,17 +65,25 @@ export class Guardian {
       }
       const output = TOOL_OUTPUTS[call.tool].parse(result);
       this.ledger.transaction(() => this.ledger.event(agentId, 'read.executed', call));
-      return output;
+      return { ok: true, result: output };
     } catch (error) {
-      if (error instanceof GuardianError) throw error;
-      throw new GuardianError('INTERNAL_UNAVAILABLE');
+      let code: DenyCode = 'INTERNAL_UNAVAILABLE';
+      // Untrusted getters can throw arbitrary values, including proxies with throwing prototypes.
+      try {
+        if (error instanceof GuardianError) code = DenyCode.parse(error.code);
+      } catch { /* Keep the safe internal-failure code. */ }
+      if (code === 'INTERNAL_UNAVAILABLE') {
+        try { this.ledger.recordDenied(this.agentId, code); }
+        catch { /* Storage failure still denies the action. */ }
+      }
+      return { ok: false, error: { code, message: code } };
     }
   }
 
   private transferOutput(r: Reservation) {
     const state = r.state === 'SUCCEEDED' ? 'succeeded' : r.state === 'FAILED' ? 'failed' :
-      ['PENDING_APPROVAL', 'APPROVED'].includes(r.state) ? 'pending_approval' :
-      ['REJECTED', 'EXPIRED'].includes(r.state) ? 'denied' : 'unknown';
+      r.state === 'PENDING_APPROVAL' ? 'pending_approval' : r.state === 'REJECTED' ? 'rejected' :
+      r.state === 'EXPIRED' ? 'expired' : 'unknown';
     return TOOL_OUTPUTS.af_propose_transfer.parse({ state, transferRef: r.id, reasonCode: r.reasonCode });
   }
 
@@ -90,13 +103,12 @@ export class Guardian {
     const current = this.ledger.get(id)!;
     if (current.state === 'SUCCEEDED' || current.state === 'FAILED') return this.transferOutput(current);
     if (current.state === 'UNKNOWN' && result.state === 'unknown') return this.transferOutput(current);
-    const reason = result.state === 'failed' ? DenyCode.safeParse(result.reasonCode) : null;
     const r = this.ledger.transition(id, result.state === 'succeeded' ? 'SUCCEEDED' : result.state === 'failed' ? 'FAILED' : 'UNKNOWN',
-      result.state === 'failed' ? reason?.success ? reason.data : 'INTERNAL_UNAVAILABLE' : null);
+      result.state === 'failed' ? 'ADAPTER_FAILED' : null);
     return this.transferOutput(r);
   }
 
-  /** Startup reconciliation never resends an uncertain action. */
+  /** Called by the trusted launcher before serving requests; never resends uncertain actions. */
   async reconcile(): Promise<void> {
     for (const r of this.ledger.listByState(this.agentId, ['RESERVED', 'APPROVED', 'DISPATCHING', 'UNKNOWN'])) {
       if (r.state === 'DISPATCHING') this.ledger.transition(r.id, 'UNKNOWN');
@@ -110,10 +122,9 @@ export class Guardian {
         }
         continue;
       }
-      // Another reconciliation may have completed while awaiting the adapter.
       if (this.ledger.get(r.id)?.state !== 'UNKNOWN') continue;
       this.ledger.transition(r.id, result.state === 'succeeded' ? 'SUCCEEDED' : 'FAILED',
-        result.state === 'failed' ? 'INTERNAL_UNAVAILABLE' : null, 'transfer.reconciled');
+        result.state === 'failed' ? 'ADAPTER_FAILED' : null, 'transfer.reconciled');
     }
     this.expirePending();
   }
@@ -124,37 +135,72 @@ export class Guardian {
     }
   }
 
-  listPending(): Reservation[] {
+  async listPending(): Promise<PendingApproval[]> {
     this.expirePending();
-    return this.ledger.listByState(this.agentId, ['PENDING_APPROVAL']);
+    return this.ledger.listByState(this.agentId, ['PENDING_APPROVAL']).map((r) => ({
+      reservationId: r.id, agentId: r.agentId, resourceId: r.call.resourceId, payeeId: r.call.payeeId,
+      amountMinor: r.call.amountMinor, currency: r.call.currency, policyVersion: r.policyVersion,
+      digest: r.requestHash, nonce: r.nonce!, expiresAt: new Date(r.expiresMs).toISOString(),
+    }));
   }
 
-  async approve(reservationId: string, digest: string, nonce: string) {
-    this.ledger.decide(reservationId, nonce, digest, true, this.agentId);
-    try { return await this.run(reservationId); }
-    catch (error) {
-      if (error instanceof GuardianError) throw error;
-      throw new GuardianError('INTERNAL_UNAVAILABLE');
+  async approve(reservationId: string, digest: string, nonce: string): Promise<ApprovalResult> {
+    try {
+      this.ledger.decide(reservationId, nonce, digest, true, this.agentId);
+      await this.run(reservationId);
+      return { ok: true };
+    } catch (error) {
+      if (error instanceof GuardianError || error instanceof ApprovalDecisionError) return { ok: false, code: error.code };
+      throw error;
     }
   }
 
-  reject(reservationId: string, nonce: string) {
-    return this.ledger.decide(reservationId, nonce, null, false, this.agentId);
+  async reject(reservationId: string, nonce: string): Promise<ApprovalResult> {
+    try {
+      this.ledger.decide(reservationId, nonce, null, false, this.agentId);
+      return { ok: true };
+    } catch (error) {
+      if (error instanceof GuardianError || error instanceof ApprovalDecisionError) return { ok: false, code: error.code };
+      throw error;
+    }
   }
 
-  revoke(agentId: string = this.agentId): void {
-    if (agentId !== this.agentId) throw new GuardianError('INVALID_ARGUMENTS');
-    this.ledger.revoke(agentId);
+  async revoke(agentId: string = this.agentId): Promise<void> {
+    if (agentId === this.agentId) this.ledger.revoke(agentId);
   }
 
-  getPolicy() { return this.ledger.getPolicy(this.agentId); }
-
-  updatePolicy(policy: Policy, expectedVersion: number) {
-    if (policy.agentId !== this.agentId) throw new GuardianError('INVALID_ARGUMENTS');
-    return this.ledger.updatePolicy(policy, expectedVersion);
+  async isRevoked(agentId: string): Promise<boolean> {
+    return agentId === this.agentId && this.ledger.getPolicy(agentId).revoked;
   }
 
-  listActivity(filter: { event?: AuditEvent['event']; limit?: number } = {}) {
+  async getPolicy() {
+    const { policy, version } = this.ledger.getPolicy(this.agentId);
+    return { policy, version };
+  }
+
+  async updatePolicy(input: unknown, expectedVersion: number): Promise<PolicyUpdateResult> {
+    if (this.ledger.getPolicy(this.agentId).version !== expectedVersion) return { ok: false, code: 'VERSION_CONFLICT' };
+    const policy = Policy.safeParse(input);
+    if (!policy.success || policy.data.agentId !== this.agentId) return { ok: false, code: 'INVALID_POLICY' };
+    try {
+      const { version } = this.ledger.updatePolicy(policy.data, expectedVersion);
+      return { ok: true, version };
+    } catch (error) {
+      if (error instanceof PolicyVersionConflict) return { ok: false, code: 'VERSION_CONFLICT' };
+      throw error;
+    }
+  }
+
+  async listActivity(filter: ActivityFilter = {}) {
+    if (!Number.isInteger(filter.limit ?? 100) || (filter.limit ?? 100) < 1) throw new RangeError('invalid activity limit');
     return this.ledger.audit.list({ ...filter, agentId: this.agentId });
+  }
+
+  async recordRefusedConnection(refused = 1): Promise<void> {
+    const count = Number.isSafeInteger(refused) && refused > 0 ? refused : 1;
+    try {
+      this.ledger.transaction(() => this.ledger.event(this.agentId, 'action.attempted', null, null, null, null, null,
+        { reason: 'connection_limit', refused: count }));
+    } catch { /* A failed audit writer cannot make the socket server accept the refused connection. */ }
   }
 }

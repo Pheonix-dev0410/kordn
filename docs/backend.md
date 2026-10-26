@@ -1,159 +1,123 @@
-# Backend contract and review (#1–#8)
+# Backend contract (#1–#8)
 
-The backend implements the four tools in `src/schema.ts`. It assumes the model,
-tool arguments, and transaction descriptions are hostile. Authorization is a pure
-function; SQLite admission and the guardian enforce its decision outside the model.
-The shared schema is unchanged.
+The real backend implements the shared `Guardian` interface in `src/guardian-api.ts`
+and the four tool schemas in `src/schema.ts`. It assumes hostile tool arguments and
+transaction descriptions. Pure policy evaluation, atomic SQLite admission, and the
+trusted adapter enforce decisions outside the model. The admin UI and Unix-socket
+server from main can consume this implementation directly.
 
-## Contract review (#1)
+## Trusted setup
 
-Reviewed `README.md`, `docs/threat-model.md`, the design document (especially
-§5–8, §10.3, and §11), all shared schemas, hashing, fixtures, and existing tests.
-The separate MCP, admin, and sandbox issues consume this backend; this change
-does not implement those components or claim OS containment.
-
-Implementation decisions that integrators need to know:
-
-- Unknown resources and identity mismatches use the existing `INVALID_ARGUMENTS`
-  code. No new deny code or shared schema change is needed.
-- Status references have no resource or identity field. The ledger looks them up
-  under the trusted agent ID and checks their resource before returning status.
-- Design §6.4 distinguishes status polling from financial reads. Status polling
-  has a separate limit of 60 accepted polls per rolling minute per agent and
-  returns `RATE_LIMITED` above it. It does not consume `reads.maxCalls` or require
-  `reads.allow`. Revocation still blocks it. A configurable polling limit would
-  require a separately reviewed policy-schema change.
-- Rolling windows exclude the exact lower endpoint: `(now - window, now]`.
-  Completed transfers age out from their recorded completion (or reconciliation)
-  time, never before their admission time; unresolved reservations continue holding quota,
-  including beyond their original window. `UNKNOWN` never expires on a timer.
-- Approval binds the canonical call, reservation ID, policy version, and expiry
-  in its digest. A policy edit invalidates an old approval, including a loosening
-  of limits. Rejection, expiry, or definitive failure releases quota; the same
-  idempotency key continues returning that terminal reservation.
-- Revocation is permanent for an agent ID. Editing its policy does not reactivate
-  it. An already dispatching operation may still complete; revocation cannot undo
-  an external action.
-- Audit events and financial state commit together. A separate tail checkpoint
-  detects tail deletion as well as gaps, content changes, and reordered rows.
-  This is local tamper evidence, not protection against a privileged host owner
-  who can rewrite both the log and its checkpoint.
-
-No changes to `src/schema.ts` are proposed here. The above decisions and API
-are ready for review with the MCP/admin contributor; no agreement or review by
-another contributor is implied.
-
-## Starting the trusted backend
-
-Requires patched Node.js 24.22.1+ (24.x) or 26.12.1+ (26.x).
-Database constructors require a private parent directory
-(mode `0700`), create/restrict database files to mode `0600`, and reject file
-symlinks and hard links. SQLite WAL files stay inside the private directory. Use
-persistent paths in that directory. `MockBankAdapter` requires an explicit path;
-use `':memory:'` explicitly only for disposable tests. The bank
-database is deliberately separate from the guardian's policy and audit database.
-An in-memory bank is suitable only for disposable unit tests.
+Use patched Node.js 24.22.1+ (24.x) or 26.12.1+ (26.x). Database constructors require
+private parent directories (`0700`), restrict files to `0600`, and reject symlinks
+and hard links. Keep SQLite WAL files in that directory. Use separate persistent
+paths for the guardian and bank; `:memory:` is only for disposable tests.
 
 ```ts
 import { Ledger } from './ledger.js';
 import { Guardian } from './guardian.js';
 import { MockBankAdapter } from './mock-bank.js';
 import { Policy } from './schema.js';
+import { serveGuardianSocket } from './guardian-socket.js';
+import { startAdminServer } from './admin/server.js';
 
 const policy = Policy.parse(configuredPolicy);
 const ledger = new Ledger('/private/kordn/ledger.sqlite');
-// Provision once, through trusted setup. Do not reset policy on each restart.
-ledger.updatePolicy(policy, 0);
+ledger.updatePolicy(policy, 0); // Provision once; do not reset policy on restart.
 const bank = new MockBankAdapter('/private/kordn/bank.sqlite');
 const guardian = new Guardian(ledger, bank, policy.agentId);
-await guardian.reconcile();
+await guardian.reconcile(); // Before serving requests, including after a restart.
+const server = await serveGuardianSocket(guardian, policy.agentId, '/private/kordn/agent.sock');
+// The launcher must set the socket's ownership/access before exposing it to the agent.
+const admin = await startAdminServer({ guardian, agentId: policy.agentId, mode: 'guard' });
 ```
 
-The setup call uses `expectedVersion = 0` only when the agent has no policy.
-On subsequent starts, load the stored policy with `ledger.getPolicy(agentId)`.
-Call `reconcile()` before exposing an in-process guardian to new calls. The Unix
-socket server does this automatically before listening.
+Use `expectedVersion = 0` only when no policy exists. On restart, load the stored
+policy with `ledger.getPolicy(agentId)` instead. Socket serving does not perform
+reconciliation automatically. The trusted launcher must call it before listening;
+it may also arrange periodic reconciliation so new unknown outcomes need not wait
+for a restart. Close the socket/admin servers before closing the ledger and bank.
 
-## Agent and admin APIs (#6)
+## Agent and admin methods
 
-`Guardian` is scoped to one launcher-selected agent. Its methods are:
+All shared interface methods return promises. `handleCall(agentId, tool, args)`
+never rejects: it returns `{ ok: true, result }` or a safe `{ ok: false, error }`.
+Unknown tools, invalid arguments, policy denials, and internal failures use the
+error branch, never a `state: 'denied'` result. Identity mismatch is `UNKNOWN_ACTION`.
+`revoke` for another agent is a no-op; `isRevoked` for another agent returns false.
 
-| Method | Result |
-| --- | --- |
-| `handleCall(agentId, tool, args)` | Promise of a validated tool output; agent ID must match the launcher-bound ID |
-| `listPending()` | Pending `Reservation[]`, including canonical call, digest, expiry, and private approval nonce |
-| `approve(reservationId, digest, nonce)` | Promise of a transfer output after revalidation and execution |
-| `reject(reservationId, nonce)` | Updated rejected reservation |
-| `revoke(agentId)` | Synchronously persists revocation and rejects unsent reservations and pending approvals |
-| `getPolicy()` | `{ policy, version, revoked }` |
-| `updatePolicy(policy, expectedVersion)` | The new `{ policy, version, revoked }`; fails on a stale version |
-| `listActivity({ event?, limit? })` | Newest-first `AuditEvent[]` for this agent; defaults to 100, capped at 1,000 |
-| `reconcile()` | Resolves uncertain outcomes against the adapter without resending them |
+Proposal results use `pending_approval`, `succeeded`, `failed`, or `unknown`.
+An idempotent retry can report the earlier `rejected` or `expired` outcome.
+`APPROVED`/`DISPATCHING` report unknown until execution completes. Every bank-side
+failure string maps to `ADAPTER_FAILED`; raw adapter text never reaches the agent.
+Unknown execution outcomes keep quota and are not retried automatically.
 
-Only the trusted admin integration may call administrative methods. It owns
-authentication, sessions, CSRF protection, and Origin checks (issues #14–#15).
-Never put `listPending()` or its nonce on the agent's tool surface. Agent proposal
-outputs contain only state, transfer reference, and reason code.
+`listPending()` returns copied `PendingApproval[]` with flat canonical details,
+`reservationId`, `digest`, `nonce`, and `expiresAt`. The digest is `requestHash` of
+the canonical transfer, as specified by the shared API. Approval additionally
+checks the stored reservation's identity, policy version, expiry, and one-use nonce.
+New approvals use `APPROVAL_TTL_SEC` (900 seconds). Approval/rejection return the
+shared `ApprovalResult`, including `STALE_DIGEST`, `BAD_NONCE`, `NOT_PENDING`, or a
+policy denial. Approval acceptance does not promise that the bank will succeed.
 
-Policy denials and invalid calls throw `GuardianError` with a schema-defined
-`code`. Adapter/DB failures fail closed. A transfer whose dispatch outcome is
-uncertain returns `state: 'unknown'`; its quota remains held. Definite adapter
-failure returns `state: 'failed'`. Adapter-specific failure strings that are not
-`DenyCode` values map to `INTERNAL_UNAVAILABLE` in stored public reasons.
+`getPolicy()` returns `{ policy, version }`; use `isRevoked(agentId)` for revocation.
+`updatePolicy(unknown, expectedVersion)` returns the shared `PolicyUpdateResult`,
+with `VERSION_CONFLICT` or `INVALID_POLICY` for expected input failures. Internal
+admin-method failures may reject. `listActivity({ events?, limit? })` is newest
+first, defaults to 100, caps at 1,000, and rejects invalid limits. Returned policy,
+approval, and activity objects are copies. `recordRefusedConnection(count)` logs
+aggregated socket refusals and never rejects if audit storage is unavailable.
 
-## Unix socket integration
+Only the authenticated admin integration may call administrative methods. Never
+expose pending approval nonces or administrative methods as agent tools. The
+merged admin UI supplies login/session, Origin, CSRF, CSP, and escaping checks;
+the integration tests exercise it against the real guardian.
 
-```ts
-import { serveGuardian, callGuardian } from './socket.js';
+## Accounting and recovery
 
-const server = await serveGuardian(guardian, '/private/kordn/agent.sock');
-// In the untrusted MCP shim, forward the original tool and arguments:
-const output = await callGuardian('/mounted/agent.sock', tool, args);
-```
+- Admission and evidence commit in one `BEGIN IMMEDIATE` transaction. Dispatch
+  re-checks policy and limits under that writer lock before calling the adapter.
+- Completed transfers age out from the later of admission and recorded completion
+  or reconciliation. Rolling windows exclude the exact lower endpoint. Unresolved
+  reservations keep quota beyond their original window; `UNKNOWN` never times out.
+- Status references are looked up under the bound agent and current resource.
+  Status polling has its own limit of 60 accepted calls per rolling minute and
+  does not consume financial reads or require `reads.allow`. Revocation blocks it.
+- Expiry, pending-list, revoke, and reconciliation queries filter states in SQL
+  before decoding. A supporting index avoids loading terminal history on each call.
+- Policy changes invalidate earlier approvals. Revocation is permanent for an
+  agent ID and rejects unsent reservations; it cannot undo an in-flight operation.
+- The bank persists intents before delay/send and applies account changes and
+  deduplication atomically by reservation ID. Faults are `delayMs`, `reject`, and
+  `responseLost`. Memos use `labelUntrusted`, independent of fixture answer keys;
+  synthetic history dates follow the injected clock.
+- Recovery changes `DISPATCHING` to `UNKNOWN` and queries the adapter without a
+  resend. Unsent reservations are rejected only after proof of non-execution.
+  A bank process dying with an intent and no outcome needs trusted investigation.
+- Audit events and state commit together. Hash chaining and a tail checkpoint
+  detect edits, deletion, and reordering; they do not resist a privileged host
+  owner rewriting both. Restore both databases consistently with SQLite-aware
+  backups, including committed WAL state. Sustained audit growth still needs a
+  storage budget and archival policy before hostile long-lived deployment.
 
-The parent directory must be private (mode `0700`); the socket is mode `0600`.
-The trusted launcher must arrange socket access for the intended agent UID and
-mount only that agent's socket into its sandbox. Identity is bound to this server
-instance; no payload identity is accepted. The server never replaces an existing
-socket. The launcher must clean up a stale socket only after confirming that its
-old guardian has stopped.
+## Socket and containment boundary
 
-Mode `0600` is the default for a same-host-UID caller. A container's UID 10001
-does not automatically map to the host socket owner, especially with rootless
-user namespaces. Before issues #11/#12 can claim Contain mode, the launcher and
-guardian contributors must agree on the mapped host UID/GID and either explicit
-ownership mapping or narrowly scoped group access. Verify access from inside the
-actual sandbox, and verify that another agent cannot open that endpoint. Do not
-make the socket world-writable to bypass the mapping problem. This integration
-agreement and Linux verification are still pending.
+Use `serveGuardianSocket` from `src/guardian-socket.ts`; there is one server
+implementation. It binds identity to the supplied agent ID and socket endpoint,
+not payload fields. The trusted launcher owns the private socket directory,
+permissions, namespace UID/GID mapping, and cleanup of a confirmed stale socket.
+A same-host-UID fixture can use `0600`. Container UID 10001 does not automatically
+map to the host socket owner: verify ownership/group access inside the actual
+rootless sandbox and deny access to other agents. Never use world-writable access
+as a substitute. This Linux integration gate remains pending in #11/#12.
 
-The protocol is newline-delimited JSON using `SocketRequest` and `SocketResponse`.
-Frames and buffered input are capped at `MAX_FRAME_BYTES`; idle connections time
-out. Each server allows 64 simultaneous connections. Incomplete frames have an
-absolute 30-second deadline, and client calls have an absolute response deadline;
-trickling bytes does not extend either deadline. Invalid frames and unknown tools
-cannot reach the bank. A missing, killed,
-or unresponsive guardian returns an explicit error; there is no direct adapter
-fallback. This socket implementation does not itself establish Contain mode.
-
-## Recovery and adapter faults (#7–#8)
-
-The adapter persists deduplication and account changes atomically by reservation
-ID. Switchable `bank.faults` are `delayMs`, `reject`, and `responseLost`. A lost
-response returns `unknown`; reconciliation returns the durable bank outcome.
-Delayed sends persist an intent first, so concurrent reconciliation cannot report
-non-execution while the original operation might still apply.
-
-On recovery, `DISPATCHING` becomes `UNKNOWN`. Reconciliation resolves it only
-with a definite adapter result. Unsent `RESERVED`/`APPROVED` actions remain held
-until the adapter proves non-execution, then become `REJECTED`; they are never
-automatically resent. Expired pending approvals become `EXPIRED`.
-
-If the bank process itself dies after persisting intent but before recording an
-outcome, that intent stays unknown and holds quota. This conservative case needs
-trusted operator investigation; the adapter does not guess or retry it. Restore
-the guardian and bank databases together; discarding the bank database discards
-its deduplication evidence.
+The protocol uses newline-delimited `SocketRequest`/`SocketResponse`. Invalid or
+oversized frames close the connection before reaching the guardian. The shared
+server bounds frames, queued calls, unread responses, idle time, and connections
+(default 32). Its incomplete-frame deadline defaults to 30 seconds and is not
+extended by trickling bytes. The client helper in `src/guardian-client.ts` forwards
+raw tool arguments, uses an absolute response deadline, and returns the tool result
+or throws a safe coded error. It never falls back to the bank.
 
 ## Validation
 
@@ -164,13 +128,13 @@ npm test
 npm run test:concurrency
 ```
 
-The test command builds the real JavaScript used by subprocess tests. The stress
-command runs 50 consecutive rounds. Each round checks 1,000 concurrent proposals
-against count and cumulative limits separately, two real `SIGKILL` checkpoints
-(reserved-before-send and applied-with-response-lost), and guardian-process death.
-Unit/integration tests also cover policy precedence and boundaries, sliding read
-windows, duplicate/conflicting keys, audit tampering and write failures, approval
-expiry/digest/nonce, policy changes, revocation, adapter timeouts, and socket framing.
+Tests cover the pure policy boundaries, rolling windows, duplicate/conflicting
+keys, audit tampering/write failures, approval binding and races, revocation,
+read-only storage, output validation, socket framing/backpressure, and the real
+backend through the authenticated admin UI and shared socket server. The stress
+command runs 50 rounds, with 1,000 concurrent proposals per count/total profile,
+real SIGKILL checkpoints, reopened databases, and a killed guardian process.
 
-These are backend checks. The Linux sandbox, real MCP clients, admin authentication,
-and the full T01–T20 integration matrix belong to the remaining integration work.
+These checks do not establish Linux containment or interoperability with real MCP
+clients. The single active guardian writer and trusted launcher remain deployment
+assumptions; SIGKILL testing is not a power-loss or disk-full test.

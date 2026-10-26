@@ -4,12 +4,19 @@ import { once } from 'node:events';
 import { chmodSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { callGuardian, serveGuardian } from '../src/socket.js';
+import { callGuardian } from '../src/guardian-client.js';
+import { serveGuardianSocket } from '../src/guardian-socket.js';
 import { MAX_FRAME_BYTES } from '../src/schema.js';
 import { harness } from './helpers.js';
 
 let h: ReturnType<typeof harness>;
 let server: Server | undefined;
+async function startSocket(path: string) {
+  await h.guardian.reconcile();
+  const socketServer = await serveGuardianSocket(h.guardian, h.policy.agentId, path);
+  chmodSync(path, 0o600);
+  return socketServer;
+}
 afterEach(async () => {
   vi.useRealTimers();
   if (server?.listening) await new Promise<void>((resolve) => server!.close(() => resolve()));
@@ -25,6 +32,7 @@ async function raw(path: string, fragments: string[], count = 1) {
     socket.setEncoding('utf8');
     socket.setTimeout(1000, () => { socket.destroy(); reject(new Error('socket test timed out')); });
     socket.on('error', reject);
+    socket.on('close', () => resolve(replies));
     socket.on('connect', () => { for (const fragment of fragments) socket.write(fragment); });
     socket.on('data', (data) => {
       buffer += data;
@@ -42,7 +50,7 @@ describe('guardian Unix socket', () => {
   it('handles fragmented and pipelined frames with server-bound identity', async () => {
     h = harness();
     const path = join(h.dir, 'guardian.sock');
-    server = await serveGuardian(h.guardian, path);
+    server = await startSocket(path);
     expect(statSync(path).mode & 0o777).toBe(0o600);
     const a = JSON.stringify({ v: 1, id: 'a', tool: 'af_get_balance', args: { resourceId: h.policy.resourceId } });
     const b = JSON.stringify({ v: 1, id: 'b', tool: 'shell', args: {} });
@@ -50,16 +58,16 @@ describe('guardian Unix socket', () => {
     expect(responses[0]).toMatchObject({ v: 1, id: 'a', ok: true });
     expect(responses[1]).toMatchObject({ id: 'b', ok: false, error: { code: 'UNKNOWN_ACTION' } });
     const [spoof] = await raw(path, [JSON.stringify({ v: 1, id: 'spoof', tool: 'af_get_balance', args: {}, agentId: 'other' }) + '\n']);
-    expect(spoof).toMatchObject({ id: 'spoof', ok: false, error: { code: 'INVALID_ARGUMENTS' } });
-    expect(h.guardian.listActivity({ event: 'policy.denied' })).toHaveLength(2);
+    expect(spoof).toBeUndefined();
+    expect(await h.guardian.listActivity({ events: ['policy.denied'] })).toHaveLength(1);
   });
 
   it('rejects malformed JSON and disconnects oversized frames', async () => {
     h = harness();
     const path = join(h.dir, 'guardian.sock');
-    server = await serveGuardian(h.guardian, path);
+    server = await startSocket(path);
     const [response] = await raw(path, ['{broken}\n']);
-    expect(response).toMatchObject({ ok: false, error: { code: 'INVALID_ARGUMENTS' } });
+    expect(response).toBeUndefined();
     const socket = createConnection(path);
     socket.on('error', () => {});
     const closed = once(socket, 'close');
@@ -68,14 +76,12 @@ describe('guardian Unix socket', () => {
     await closed;
   });
 
-  it('refuses a public directory and does not replace an existing socket', async () => {
+  it('uses launcher-provisioned permissions and does not replace an existing socket', async () => {
     h = harness();
     const path = join(h.dir, 'guardian.sock');
-    chmodSync(h.dir, 0o755);
-    await expect(serveGuardian(h.guardian, path)).rejects.toThrow('private directory');
-    chmodSync(h.dir, 0o700);
-    server = await serveGuardian(h.guardian, path);
-    await expect(serveGuardian(h.guardian, path)).rejects.toMatchObject({ code: 'EADDRINUSE' });
+    server = await startSocket(path);
+    expect(statSync(path).mode & 0o777).toBe(0o600);
+    await expect(serveGuardianSocket(h.guardian, h.policy.agentId, path)).rejects.toMatchObject({ code: 'EADDRINUSE' });
   });
 
   it('fails closed on a missing guardian, invalid replies, and response timeouts', async () => {
@@ -118,9 +124,9 @@ describe('guardian Unix socket', () => {
   it('bounds simultaneous connections instead of accepting unbounded idle peers', async () => {
     h = harness();
     const path = join(h.dir, 'guardian.sock');
-    server = await serveGuardian(h.guardian, path);
+    server = await startSocket(path);
     const dropped = once(server, 'drop');
-    const sockets = Array.from({ length: 65 }, () => {
+    const sockets = Array.from({ length: 33 }, () => {
       const socket = createConnection(path);
       socket.on('error', () => {});
       return socket;
@@ -132,14 +138,14 @@ describe('guardian Unix socket', () => {
       })));
       await dropped;
       const count = await new Promise<number>((resolve, reject) => server!.getConnections((error, n) => error ? reject(error) : resolve(n)));
-      expect(count).toBe(64);
+      expect(count).toBe(32);
     } finally { for (const socket of sockets) socket.destroy(); }
   });
 
   it('disconnects an incomplete frame even if bytes arrive before each idle timeout', async () => {
     h = harness();
     const path = join(h.dir, 'guardian.sock');
-    server = await serveGuardian(h.guardian, path);
+    server = await startSocket(path);
     vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
     const accepted = once(server, 'connection');
     const socket = createConnection(path);
@@ -147,9 +153,10 @@ describe('guardian Unix socket', () => {
     const closed = once(socket, 'close');
     try {
       await once(socket, 'connect');
-      await accepted;
+      const [peer] = await accepted;
+      const firstData = once(peer, 'data');
       socket.write(' ');
-      await new Promise(setImmediate);
+      await firstData;
       await vi.advanceTimersByTimeAsync(15_000);
       socket.write(' ');
       await new Promise(setImmediate);

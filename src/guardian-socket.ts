@@ -17,12 +17,15 @@ export interface GuardianSocketOptions {
   maxInFlight?: number;
   /** A connection with no traffic either way for this long is closed. */
   idleTimeoutMs?: number;
+  /** Absolute deadline for assembling an incomplete frame; trickling bytes cannot extend it. */
+  frameTimeoutMs?: number;
 }
 
 const DEFAULTS: Required<GuardianSocketOptions> = {
   maxConnections: 32,
   maxInFlight: 32,
   idleTimeoutMs: 10 * 60_000,
+  frameTimeoutMs: 30_000,
 };
 
 // Node clamps a longer timer to 1 ms, which would close every connection at once.
@@ -44,7 +47,7 @@ export function serveGuardianSocket(
 ): Promise<Server> {
   const limits = { ...DEFAULTS, ...options };
   for (const [name, value] of Object.entries(limits)) {
-    const max = name === 'idleTimeoutMs' ? MAX_TIMER_MS : Number.MAX_SAFE_INTEGER;
+    const max = name === 'idleTimeoutMs' || name === 'frameTimeoutMs' ? MAX_TIMER_MS : Number.MAX_SAFE_INTEGER;
     if (!Number.isInteger(value) || value < 1 || value > max) throw new RangeError(`invalid ${name}: ${value}`);
   }
   const server = createServer((socket) => handleConnection(guardian, agentId, socket, limits));
@@ -103,6 +106,8 @@ function handleConnection(guardian: Guardian, agentId: string, socket: Socket, l
   // Responses go out in request order even though handleCall is async.
   let queue = Promise.resolve();
   let inFlight = 0;
+  let frameTimer: NodeJS.Timeout | undefined;
+  socket.on('close', () => clearTimeout(frameTimer));
 
   socket.setTimeout(limits.idleTimeoutMs, () => socket.destroy());
 
@@ -122,6 +127,7 @@ function handleConnection(guardian: Guardian, agentId: string, socket: Socket, l
       const newline = backlog.indexOf(0x0a);
       if (newline === -1) {
         if (partialBytes + backlog.length > MAX_FRAME_BYTES) return void socket.destroy();
+        if (!frameTimer) frameTimer = setTimeout(() => socket.destroy(), limits.frameTimeoutMs);
         partial ??= Buffer.allocUnsafe(MAX_FRAME_BYTES);
         backlog.copy(partial, partialBytes);
         partialBytes += backlog.length;
@@ -129,6 +135,8 @@ function handleConnection(guardian: Guardian, agentId: string, socket: Socket, l
         break;
       }
       const piece = backlog.subarray(0, newline);
+      clearTimeout(frameTimer);
+      frameTimer = undefined;
       backlog = newline + 1 < backlog.length ? backlog.subarray(newline + 1) : undefined;
       if (partialBytes + piece.length > MAX_FRAME_BYTES) return void socket.destroy();
       let line: string;
