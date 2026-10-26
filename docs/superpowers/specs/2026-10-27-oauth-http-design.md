@@ -93,6 +93,17 @@ single owner. Nothing is hosted, and there's no third-party login.
    - During the lock, wrong tokens are refused but the correct token still works. This
      matches the admin UI login, so a stranger with the URL can't stop the owner approving
      apps.
+   - Because the correct token always passes, the limiter doesn't slow down a guesser. It
+     only changes what a wrong guess sees (429 instead of 401). The real protection is that
+     `KORDN_TOKEN` is 32+ random characters, and the docs say so. They don't claim a
+     guessing rate.
+   - Deny needs no token: the app gets `access_denied`. `oauth.denied` is audited only when
+     a correct `KORDN_TOKEN` was entered with it, so strangers can't grow the append-only
+     log.
+   - Opening the consent page stores a pending request. There are at most 5 pending
+     requests per `client_id`, and a 6th evicts that client's oldest. A `state` longer than
+     1024 characters is refused with `invalid_request`. Client ids are random and known only
+     to the app that registered, so a flood can only churn its own clients' rows.
 10. **Identity.** Calls made with an OAuth token act as the policy's `agentId`, exactly like
     `KORDN_TOKEN` calls. Policies and limits are unchanged.
 11. **Live checks.** The builder runs MCP Inspector plus automated tests. The owner runs the
