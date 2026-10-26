@@ -2,7 +2,7 @@
 
 A firewall for AI agents. kordn is an MCP server that sits between an agent and the actions it can take, and enforces limits you set (which payees, how much money, how many calls) outside the model. A prompt injection can change what the agent tries. It can't change what kordn allows.
 
-> **v0.1.0-alpha is experimental.** It protects a mock bank with fake money only. Don't connect it to real accounts or rely on it for real money.
+> **v0.1.0-alpha is experimental.** kordn runs on your own machine and you use it at your own risk. There is no hosted service and no warranty (see [LICENSE](LICENSE)). Don't rely on it for real money.
 
 ## Setup
 

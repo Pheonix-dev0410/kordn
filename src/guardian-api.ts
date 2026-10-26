@@ -1,4 +1,4 @@
-import type { AuditEvent, DenyCode, Policy } from './schema.js';
+import type { AuditEvent, Currency, DenyCode, Policy } from './schema.js';
 
 // What the MCP server (#9), the sandbox launcher (#12) and the admin UI (#14, #15) need
 // from the guardian. src/guardian.ts implements it; test/fake-guardian.ts is an in-memory stand-in for tests.
@@ -12,7 +12,7 @@ export interface PendingApproval {
   resourceId: string;
   payeeId: string;
   amountMinor: number;
-  currency: 'USD';
+  currency: Currency;
   policyVersion: number;
   /** requestHash of the canonical transfer. Approval is bound to it. */
   digest: string;
