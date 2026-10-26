@@ -142,6 +142,28 @@ describe('OAuthStore requests, codes and tokens', () => {
     expect(store.takeRequest(edge.id, edge.csrf)).toEqual(req());
   });
 
+  it('keeps at most 5 pending requests per client, evicting the oldest', () => {
+    const { t, store, req } = setup();
+    const other = store.registerClient(reg()).client;
+    const theirs = store.saveRequest(req(other));
+    const mine = [];
+    for (let i = 0; i < 6; i++) {
+      mine.push(store.saveRequest(req()));
+      t.now += 1;
+    }
+    const [oldest, ...rest] = mine;
+    expect(store.takeRequest(oldest!.id, oldest!.csrf)).toBeNull();
+    for (const r of rest) expect(store.takeRequest(r.id, r.csrf)).toEqual(req());
+    expect(store.takeRequest(theirs.id, theirs.csrf)).toEqual(req(other));
+  });
+
+  it('evicts by insertion order when requests share a timestamp', () => {
+    const { store, req } = setup();
+    const mine = Array.from({ length: 6 }, () => store.saveRequest(req()));
+    expect(store.takeRequest(mine[0]!.id, mine[0]!.csrf)).toBeNull();
+    expect(store.takeRequest(mine[1]!.id, mine[1]!.csrf)).toEqual(req());
+  });
+
   it('exchanges a code once and kills the grant on reuse', () => {
     const { store, client, req } = setup();
     const approved = store.approve(req());

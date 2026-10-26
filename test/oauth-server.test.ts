@@ -433,14 +433,46 @@ describe('/authorize', () => {
     advance(600_000);
     expect((await submit({ ...page, owner_token: 'owner', decision: 'approve' })).status).toBe(400);
   });
-  it('denies', async () => {
+  it('denies, auditing only when the owner token came with it', async () => {
     const { register, open, submit, audit, store } = flow();
     const id = (await register({ redirect_uris: [REDIRECT], client_name: 'App' })).body.client_id as string;
-    const res = await submit({ ...(await open(id)), decision: 'deny' });
+    const res = await submit({ ...(await open(id)), decision: 'deny', owner_token: 'owner' });
     expect(res.status).toBe(303);
     expect(Object.fromEntries(location(res).searchParams)).toEqual({ error: 'access_denied', state: 'st', iss: PUBLIC });
+    expect(audit).toHaveBeenCalledTimes(1);
     expect(audit).toHaveBeenCalledWith('oauth.denied', { client: 'App', redirectHost: 'a.example' });
     expect(store.listApps()).toHaveLength(0);
+  });
+  it('lets anyone deny without writing audit rows', async () => {
+    const { register, open, submit, audit } = flow();
+    const id = (await register()).body.client_id as string;
+    for (let i = 0; i < 20; i++) {
+      const res = await submit({ ...(await open(id)), decision: 'deny' });
+      expect(res.status).toBe(303);
+      expect(location(res).searchParams.get('error')).toBe('access_denied');
+    }
+    expect(audit).not.toHaveBeenCalled();
+  });
+  it('does not count a wrong token on deny', async () => {
+    const { register, open, submit, audit } = flow();
+    const id = (await register()).body.client_id as string;
+    for (let i = 0; i < 6; i++) {
+      const res = await submit({ ...(await open(id)), decision: 'deny', owner_token: 'nope' });
+      expect(res.status).toBe(303);
+      expect(location(res).searchParams.get('error')).toBe('access_denied');
+    }
+    expect(audit).not.toHaveBeenCalled();
+    // Six wrong denies left the limiter empty: a wrong approve is still a 401, not a 429.
+    const wrong = await submit({ ...(await open(id)), decision: 'approve', owner_token: 'nope' });
+    expect(wrong.status).toBe(401);
+  });
+  it('refuses a state over 1024 characters without echoing it', async () => {
+    const { call, query, params, register } = flow();
+    const id = (await register()).body.client_id as string;
+    const long = await call(query(params(id, REDIRECT, { state: 'x'.repeat(1025) })));
+    expect(long.status).toBe(303);
+    expect(Object.fromEntries(location(long).searchParams)).toEqual({ error: 'invalid_request', iss: PUBLIC });
+    expect((await call(query(params(id, REDIRECT, { state: 'x'.repeat(1024) })))).status).toBe(200);
   });
   it('locks out wrong owner tokens but lets the right one through', async () => {
     const { register, open, submit, advance } = flow();

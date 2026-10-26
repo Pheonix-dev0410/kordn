@@ -9,6 +9,7 @@ const UNAPPROVED_POOL = 50;
 const UNAPPROVED_TTL_MS = 3600_000;
 const APPROVED_POOL = 20;
 const REQUEST_TTL_MS = 600_000;
+const REQUESTS_PER_CLIENT = 5;
 const CODE_TTL_MS = 60_000;
 const ACCESS_TTL_S = 3600;
 const REFRESH_IDLE_MS = 30 * 86_400_000;
@@ -194,14 +195,22 @@ export class OAuthStore {
     return secret !== null && sameSecret(hex(secret), row.secret_hash);
   }
 
-  /** Server-side pending request, 600 s TTL. The id goes in the form; the CSRF token is checked with sameSecret. */
+  /**
+   * Server-side pending request, 600 s TTL. The id goes in the form; the CSRF token is checked with sameSecret.
+   * At most 5 per client, oldest evicted: only the app that registered a client knows its id, so it can only churn its own.
+   */
   saveRequest(req: AuthorizeRequest): { id: string; csrf: string } {
     const id = newSecret();
     const csrf = newSecret();
     const now = this.now();
-    this.db.prepare('DELETE FROM oauth_requests WHERE expires_at <= ?').run(now);
-    this.db.prepare('INSERT INTO oauth_requests (id_hash, csrf_hash, client_id, redirect_uri, code_challenge, resource, state, expires_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)')
-      .run(hex(id), hex(csrf), req.clientId, req.redirectUri, req.codeChallenge, req.resource, req.state, now + REQUEST_TTL_MS);
+    this.tx(() => {
+      this.db.prepare('DELETE FROM oauth_requests WHERE expires_at <= ?').run(now);
+      this.db.prepare('INSERT INTO oauth_requests (id_hash, csrf_hash, client_id, redirect_uri, code_challenge, resource, state, expires_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)')
+        .run(hex(id), hex(csrf), req.clientId, req.redirectUri, req.codeChallenge, req.resource, req.state, now + REQUEST_TTL_MS);
+      // rowid follows insertion order among the rows that remain.
+      this.db.prepare(`DELETE FROM oauth_requests WHERE client_id = ? AND rowid NOT IN
+        (SELECT rowid FROM oauth_requests WHERE client_id = ? ORDER BY rowid DESC LIMIT ?)`).run(req.clientId, req.clientId, REQUESTS_PER_CLIENT);
+    });
     return { id, csrf };
   }
 

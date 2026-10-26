@@ -41,6 +41,7 @@ const AUTH_METHODS: AuthMethod[] = ['none', 'client_secret_post', 'client_secret
 const WELL_KNOWN_RESOURCE = '/.well-known/oauth-protected-resource';
 const WELL_KNOWN_SERVER = '/.well-known/oauth-authorization-server';
 const OWNER_FAILURES_PER_MINUTE = 5;
+const MAX_STATE_LENGTH = 1024;
 
 export const OAUTH_PATHS: readonly string[] = [
   WELL_KNOWN_RESOURCE, `${WELL_KNOWN_RESOURCE}/mcp`, WELL_KNOWN_SERVER, '/register', '/authorize', '/token', '/revoke',
@@ -280,6 +281,8 @@ export function createOAuthServer(options: OAuthServerOptions): OAuthServer {
       return errorPage(400, 'This app is not registered with kordn, or it asked to return to an address it did not register.');
     }
     const state = q.get('state');
+    // Stored with the pending request; an oversized one isn't echoed back either.
+    if (state !== null && state.length > MAX_STATE_LENGTH) return redirectBack(redirectUri, { error: 'invalid_request' }, null);
     const challenge = q.get('code_challenge');
     if (q.get('response_type') !== 'code') return redirectBack(redirectUri, { error: 'unsupported_response_type' }, state);
     if (challenge === null || !isValidChallenge(challenge) || q.get('code_challenge_method') !== 'S256') {
@@ -302,14 +305,17 @@ export function createOAuthServer(options: OAuthServerOptions): OAuthServer {
     // The client may have been evicted, pruned or revoked while the page was open; approve() would throw.
     const client = store.getClient(req.clientId);
     if (!client) return errorPage(400, 'This app is no longer registered. Start connecting again from the app.');
+    // The host the consent page showed the owner, not necessarily the client's first redirect URI.
     const app = { client: client.name, redirectHost: new URL(req.redirectUri).host };
+    const isOwner = sameSecret(params.get('owner_token'), options.ownerToken);
 
     if (decision === 'deny') {
-      audit('oauth.denied', app);
+      // Anyone may deny, but only the owner's denial goes into the append-only audit log; wrong tokens here aren't counted.
+      if (isOwner) audit('oauth.denied', app);
       return redirectBack(req.redirectUri, { error: 'access_denied' }, req.state);
     }
     // The correct token always passes, even while wrong ones are locked out.
-    if (!sameSecret(params.get('owner_token'), options.ownerToken)) {
+    if (!isOwner) {
       if (ownerFailures.full()) return showConsent(429, client, req, ['Too many wrong tokens. Wait a minute.']);
       ownerFailures.add();
       return showConsent(401, client, req, ['Wrong KORDN_TOKEN.']);
