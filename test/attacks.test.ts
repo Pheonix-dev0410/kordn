@@ -169,7 +169,7 @@ describe.runIf(DOCKER_TESTS && process.platform === 'linux')('hostile agent insi
     console.log(JSON.stringify(out));
   `;
 
-  it('cannot reach the bank, the admin UI, the internet or the host files; only the guardian answers', async () => {
+  it('T17, T18: cannot reach the bank, the admin UI, the internet or the host files; only the guardian answers', async () => {
     const h = harness();
     closers.push(() => h.close());
     const admin = createServer((s) => s.destroy());
