@@ -94,7 +94,7 @@ export async function serveHttp(options: HttpOptions): Promise<HttpHandle> {
       drain(req);
       return reply(res, 413, 'request too large');
     }
-    const body = req.method === 'POST' ? await readBody(req, MAX_BODY_BYTES) : undefined;
+    const body = req.method === 'POST' ? await readBody(req, MAX_BODY_BYTES, () => drain(req)) : undefined;
     if (body === null) return reply(res, 413, 'request too large');
 
     const abort = new AbortController();
@@ -132,11 +132,9 @@ async function serveOAuth(req: IncomingMessage, res: ServerResponse, url: URL, o
     // No body expected (GET, OPTIONS, or a method the handler refuses): discard any, within bounds.
     drain(req, REFUSED_DRAIN_BYTES, REFUSED_DRAIN_MS);
   } else {
-    if (Number(req.headers['content-length']) > limit) {
-      drain(req);
-      return reply(res, 413, 'request too large');
-    }
-    const read = await readBody(req, limit);
+    // Unauthenticated, so an oversized body gets the refused bounds, not the 64 MiB drain.
+    if (Number(req.headers['content-length']) > limit) return refuse(req, res, 413, 'request too large');
+    const read = await readBody(req, limit, () => drain(req, REFUSED_DRAIN_BYTES, REFUSED_DRAIN_MS, true));
     if (read === null) return reply(res, 413, 'request too large');
     body = read;
   }
@@ -166,8 +164,8 @@ function authorized(header: string | undefined, expected: Buffer): boolean {
   return match?.[1] !== undefined && timingSafeEqual(digest(match[1]), expected);
 }
 
-/** Null as soon as the body goes over the limit; the rest is drained in the background. */
-function readBody(req: IncomingMessage, limit: number): Promise<Uint8Array<ArrayBuffer> | null> {
+/** Null as soon as the body goes over the limit; `drainRest` then discards the rest in the background. */
+function readBody(req: IncomingMessage, limit: number, drainRest: () => void): Promise<Uint8Array<ArrayBuffer> | null> {
   return new Promise((resolve, reject) => {
     const chunks: Buffer[] = [];
     let size = 0;
@@ -175,7 +173,7 @@ function readBody(req: IncomingMessage, limit: number): Promise<Uint8Array<Array
       size += chunk.length;
       if (size <= limit) return void chunks.push(chunk);
       req.off('data', onData).off('end', onEnd);
-      drain(req);
+      drainRest();
       resolve(null);
     };
     const onEnd = () => resolve(new Uint8Array(Buffer.concat(chunks)));

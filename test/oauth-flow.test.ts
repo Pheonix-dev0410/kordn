@@ -68,6 +68,33 @@ function raw(
   });
 }
 
+/**
+ * Stream up to `total` bytes as a chunked JSON POST, as fast as the server takes them. Resolves
+ * with the response status and how much was written before the server cut the connection.
+ */
+function upload(url: string, total: number): Promise<{ status: number; written: number }> {
+  return new Promise((resolve) => {
+    let status = 0;
+    let written = 0;
+    const chunk = Buffer.alloc(64 * 1024, 'x');
+    const req = request(url, { method: 'POST', headers: { 'content-type': 'application/json' } }, (res) => {
+      status = res.statusCode ?? 0;
+      res.resume();
+    });
+    const done = () => resolve({ status, written });
+    req.on('error', done);
+    req.on('close', done);
+    const next = (): void => {
+      if (req.destroyed) return;
+      if (written >= total) return void req.end();
+      written += chunk.length;
+      if (req.write(chunk)) setImmediate(next);
+      else req.once('drain', next);
+    };
+    next();
+  });
+}
+
 const accept = { accept: 'application/json, text/event-stream' };
 const listTools = JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/list', params: {} });
 
@@ -196,6 +223,18 @@ describe('OAuth over HTTP', () => {
     const res = await fetch(`${s.base}${path}`, { method: 'POST', headers: { 'content-type': type }, body: 'x'.repeat(size) });
     expect(res.status).toBe(413);
   });
+
+  it('cuts off an oversized chunked /register upload soon after its 413', async () => {
+    const s = await start();
+    const started = Date.now();
+    const { status, written } = await upload(`${s.base}/register`, 256 * 1024 * 1024);
+    expect(process.platform === 'linux' ? [413] : [413, 0]).toContain(status);
+    // Unauthenticated, so the refused bounds (64 KiB, 1 s, then hang up) apply, not the 64 MiB /
+    // 5 s drain behind KORDN_TOKEN. Socket buffers absorb a few MiB on the client's side either
+    // way, so the cut's timing is what tells the two apart.
+    expect(written).toBeLessThan(32 * 1024 * 1024);
+    expect(Date.now() - started).toBeLessThan(3_000);
+  }, 15_000);
 
   it('refuses a foreign Origin on POST /authorize before the OAuth handler sees it', async () => {
     const s = await start();
