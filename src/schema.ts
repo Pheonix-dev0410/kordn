@@ -62,6 +62,41 @@ export const Policy = z
   });
 export type Policy = z.infer<typeof Policy>;
 
+// ---- Decisions ----
+
+export const DenyCode = z.enum([
+  'SESSION_REVOKED',
+  'ISOLATION_FAILED',
+  'UNKNOWN_ACTION',
+  'INVALID_ARGUMENTS',
+  'CAPABILITY_DISABLED',
+  'UNAPPROVED_PAYEE',
+  'SINGLE_LIMIT',
+  'FREQUENCY_LIMIT',
+  'CUMULATIVE_LIMIT',
+  'APPROVAL_EXPIRED',
+  'INTERNAL_UNAVAILABLE',
+  'IDEMPOTENCY_CONFLICT',
+  'RATE_LIMITED',
+]);
+export type DenyCode = z.infer<typeof DenyCode>;
+
+/** Why a transfer ended up where it did, as the agent sees it. Adapter failures all map to ADAPTER_FAILED. */
+export const TransferReasonCode = z.enum([...DenyCode.options, 'ADAPTER_FAILED']);
+export type TransferReasonCode = z.infer<typeof TransferReasonCode>;
+
+/** How long a pending transfer waits for the user before it expires. */
+export const APPROVAL_TTL_SEC = 900;
+
+/** Result of the pure policy check. Reservations are created by the guardian, not here. */
+export type Verdict = { kind: 'deny'; code: DenyCode } | { kind: 'allow' } | { kind: 'require_approval' };
+
+export type AdapterResult =
+  | { state: 'succeeded'; receiptId: string }
+  // Free text from the bank side: audit metadata at most, never returned to the agent.
+  | { state: 'failed'; reasonCode: string }
+  | { state: 'unknown'; correlationId: string };
+
 // ---- Tools: the only four the agent can call ----
 
 export const TOOL_NAMES = ['af_get_balance', 'af_list_transactions', 'af_propose_transfer', 'af_get_transfer_status'] as const;
@@ -124,44 +159,19 @@ export const TOOL_OUTPUTS = {
       )
       .max(20),
   }),
+  // A denial is never a result: it is an error carrying a DenyCode (socket ok:false, MCP isError).
+  // rejected and expired only describe an earlier transfer, reported again on an idempotent retry.
   af_propose_transfer: z.strictObject({
-    state: z.enum(['denied', 'pending_approval', 'succeeded', 'failed', 'unknown']),
+    state: z.enum(['pending_approval', 'succeeded', 'failed', 'unknown', 'rejected', 'expired']),
     transferRef: TransferRef.nullable(),
-    reasonCode: z.string().nullable(),
+    reasonCode: TransferReasonCode.nullable(),
   }),
   af_get_transfer_status: z.strictObject({
     state: State,
-    reasonCode: z.string().nullable(),
+    reasonCode: TransferReasonCode.nullable(),
     updatedAt: z.iso.datetime(),
   }),
 } as const;
-
-// ---- Decisions ----
-
-export const DenyCode = z.enum([
-  'SESSION_REVOKED',
-  'ISOLATION_FAILED',
-  'UNKNOWN_ACTION',
-  'INVALID_ARGUMENTS',
-  'CAPABILITY_DISABLED',
-  'UNAPPROVED_PAYEE',
-  'SINGLE_LIMIT',
-  'FREQUENCY_LIMIT',
-  'CUMULATIVE_LIMIT',
-  'APPROVAL_EXPIRED',
-  'INTERNAL_UNAVAILABLE',
-  'IDEMPOTENCY_CONFLICT',
-  'RATE_LIMITED',
-]);
-export type DenyCode = z.infer<typeof DenyCode>;
-
-/** Result of the pure policy check. Reservations are created by the guardian, not here. */
-export type Verdict = { kind: 'deny'; code: DenyCode } | { kind: 'allow' } | { kind: 'require_approval' };
-
-export type AdapterResult =
-  | { state: 'succeeded'; receiptId: string }
-  | { state: 'failed'; reasonCode: string }
-  | { state: 'unknown'; correlationId: string };
 
 // ---- Transfer lifecycle ----
 
