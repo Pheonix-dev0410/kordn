@@ -1,0 +1,19 @@
+# Build context for sandbox/Dockerfile (BuildKit reads <Dockerfile>.dockerignore).
+# Allowlist: nothing enters the context unless named here.
+*
+!package.json
+!package-lock.json
+!tsconfig.json
+!src/**
+!sandbox/agent.mjs
+
+# Never, even inside allowed paths.
+**/.env
+**/.env.*
+**/.envrc
+**/.git
+**/node_modules
+**/*.sqlite*
+**/.npmrc
+**/*.pem
+**/*.key
