@@ -78,13 +78,16 @@ kordn keeps its ledger, audit log and the mock bank in `~/.local/state/kordn` (`
 
 ## Use your own payment account (test mode)
 
-By default kordn guards a mock bank. It can also guard your own **RazorpayX** account (India, INR payouts) or **Stripe** account (USD transfers to connected accounts). The agent still gets only the four tools above; your API key stays with kordn.
+By default kordn guards a mock bank. It can also guard your own **RazorpayX** account (India, INR payouts), **Stripe** account (USD transfers to connected accounts) or **PayPal** account (USD payouts to PayPal emails). The agent still gets only the four tools above; your API key stays with kordn.
+
+Who can get a test account: RazorpayX needs a registered business, and Stripe is invite-only in India. PayPal's developer sandbox is free with any PayPal login.
 
 1. In your provider's **test mode**, get API keys and an id for each payee:
    - RazorpayX: a `rzp_test_` key id and secret, your account number, and a fund account (`fa_…`) per payee.
    - Stripe: a `sk_test_` key (a restricted key that can create transfers and read your balance is enough) and a connected account (`acct_…`) per payee.
-2. Copy `examples/bank-razorpayx.json` or `examples/bank-stripe.json` and fill in the ids. Every payee in your policy needs one.
-3. In your policy, set `resourceId` to `razorpayx:main` and `currency` to `INR` (amounts in paise), or `stripe:main` and `USD` (amounts in cents).
+   - PayPal: on developer.paypal.com (Sandbox), create a **US** business sandbox account, then an app under Apps & Credentials tied to it, for its client id and secret. PayPal refuses payouts from Indian accounts, sandbox included (`PAYOUT_NOT_AVAILABLE`). Each payee is a PayPal email; sandbox personal accounts end in `@personal.example.com`.
+2. Copy `examples/bank-razorpayx.json`, `examples/bank-stripe.json` or `examples/bank-paypal.json` and fill in the ids. Every payee in your policy needs one.
+3. In your policy, set `resourceId` to `razorpayx:main` and `currency` to `INR` (amounts in paise), or `stripe:main` / `paypal:main` and `USD` (amounts in cents).
 4. Start kordn with the keys in the environment, never in a file:
 
 ```sh
@@ -93,9 +96,14 @@ claude mcp add kordn \
   -- node /absolute/path/to/kordn/dist/index.js --policy /path/to/my-policy.json --bank /path/to/my-bank.json --data ~/.local/state/kordn-razorpayx
 ```
 
-For Stripe, set `STRIPE_API_KEY` instead. kordn refuses live keys unless you add `--live`; with it, real money moves, at your own risk.
+For Stripe, set `STRIPE_API_KEY` instead; for PayPal, `PAYPAL_CLIENT_ID` and `PAYPAL_CLIENT_SECRET`. kordn refuses live keys unless you add `--live`; with it, real money moves, at your own risk. PayPal credentials don't say which environment they belong to, so there kordn talks to the sandbox unless you pass `--live`.
 
-RazorpayX often answers that a payout is still processing. kordn reports it as `unknown` and keeps it counted against your limits until RazorpayX says processed or failed. It checks every 30 seconds and whenever the agent asks for the transfer's status.
+PayPal notes:
+- Balance and transaction history need the app's **Transaction search** feature; without it those two tools fail and payouts still work.
+- PayPal can't look a payout up by kordn's id. After a lost reply or a restart, kordn checks by sending a $0 payout with the same id: PayPal either points to the real one or denies the $0 one (`ZERO_AMOUNT`, nothing moves), which also stops the original from arriving late. These denied $0 batches show up in your payout history.
+- A payout to an email with no PayPal account is `UNCLAIMED` until claimed or returned after 30 days. kordn counts it as spent.
+
+RazorpayX and PayPal often answer that a payout is still processing. kordn reports it as `unknown` and keeps it counted against your limits until the provider says it went through or failed. It checks every 30 seconds and whenever the agent asks for the transfer's status.
 
 ## Approve transfers: the admin UI
 

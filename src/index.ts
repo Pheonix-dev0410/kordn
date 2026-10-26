@@ -24,9 +24,9 @@ const USAGE = `usage: kordn [--policy <path>] [--data <dir>] [--bank <path> [--l
   --policy <path>        policy file; replaces the stored policy (default: examples/policy.json,
                          used only on first run)
   --data <dir>           where the ledger and mock bank live (default: ~/.local/state/kordn)
-  --bank <path>          a real payment provider instead of the mock bank (razorpayx or stripe);
-                         keys come from the environment, test keys only
-  --live                 allow live provider keys: real money moves
+  --bank <path>          a real payment provider instead of the mock bank (razorpayx, stripe
+                         or paypal); keys come from the environment, test mode only
+  --live                 allow live provider keys (PayPal: use live, not sandbox): real money moves
   --guardian <socket>    forward every call to the guardian on this Unix socket (Contain mode)
   --http                 Streamable HTTP at http://127.0.0.1:<port>/mcp, needs KORDN_TOKEN
   --port <n>             HTTP port (default 3333)

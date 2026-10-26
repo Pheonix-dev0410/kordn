@@ -1,0 +1,7 @@
+{
+  "provider": "paypal",
+  "payees": {
+    "utilities": "payee-paypal-email@example.com",
+    "landlord": "payee-paypal-email@example.com"
+  }
+}

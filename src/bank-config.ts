@@ -1,5 +1,6 @@
 import { readFileSync } from 'node:fs';
 import { z } from 'zod';
+import { PayPalAdapter } from './paypal.js';
 import { RazorpayXAdapter } from './razorpayx.js';
 import type { BankAdapter, Policy } from './schema.js';
 import { StripeAdapter } from './stripe.js';
@@ -21,10 +22,14 @@ export const BankConfig = z.discriminatedUnion('provider', [
     provider: z.literal('stripe'),
     payees: Payees(/^acct_[A-Za-z0-9]+$/),
   }),
+  z.strictObject({
+    provider: z.literal('paypal'),
+    payees: Payees(/^[^\s@]{1,64}@[^\s@]+\.[^\s@]{2,}$/),
+  }),
 ]);
 export type BankConfig = z.infer<typeof BankConfig>;
 
-const CURRENCY = { razorpayx: 'INR', stripe: 'USD' } as const;
+const CURRENCY = { razorpayx: 'INR', stripe: 'USD', paypal: 'USD' } as const;
 
 export function loadBankConfig(path: string): BankConfig {
   let raw: unknown;
@@ -41,6 +46,7 @@ export function loadBankConfig(path: string): BankConfig {
 /**
  * The adapter for this config and policy. Refuses a mismatch that would make transfers fail
  * or go somewhere unexpected, and live keys unless `live` is set: test mode is the default.
+ * PayPal credentials don't show which environment they're for, so there `live` picks it.
  */
 export function openBank(config: BankConfig, policy: Policy, env: NodeJS.ProcessEnv, live = false, fetchImpl?: typeof fetch): BankAdapter {
   const provider = config.provider;
@@ -66,6 +72,9 @@ export function openBank(config: BankConfig, policy: Policy, env: NodeJS.Process
     const keyId = need('RAZORPAY_KEY_ID');
     refuseLive(keyId.startsWith('rzp_test_'));
     return new RazorpayXAdapter({ keyId, keySecret: need('RAZORPAY_KEY_SECRET'), accountNumber: config.accountNumber, mode: config.mode, payees: config.payees, fetch: fetchImpl });
+  }
+  if (config.provider === 'paypal') {
+    return new PayPalAdapter({ clientId: need('PAYPAL_CLIENT_ID'), clientSecret: need('PAYPAL_CLIENT_SECRET'), payees: config.payees, live, fetch: fetchImpl });
   }
   const apiKey = need('STRIPE_API_KEY');
   refuseLive(/^(sk|rk)_test_/.test(apiKey));
