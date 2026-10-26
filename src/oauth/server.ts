@@ -69,18 +69,19 @@ export function parsePublicUrl(value: string): URL | null {
   return new URL(url.origin);
 }
 
-/** Basic credentials are form-urlencoded before base64 (RFC 6749 §2.3.1). */
-function basicCredentials(header: string | null): { id: string; secret: string } | null {
-  const match = header?.match(/^Basic +([A-Za-z0-9+/=_-]+)$/i);
-  if (!match) return null;
+/** Basic credentials are form-urlencoded before base64 (RFC 6749 §2.3.1). 'bad' for a Basic header that can't be parsed; null when there is none. */
+function basicCredentials(header: string | null): { id: string; secret: string } | 'bad' | null {
+  if (!header || !/^Basic\b/i.test(header)) return null;
+  const match = header.match(/^Basic +([A-Za-z0-9+/=_-]+)$/i);
+  if (!match) return 'bad';
   const decoded = Buffer.from(match[1] as string, 'base64').toString('utf8');
   const colon = decoded.indexOf(':');
-  if (colon < 0) return null;
+  if (colon < 0) return 'bad';
   try {
     const form = (s: string) => decodeURIComponent(s.replace(/\+/g, ' '));
     return { id: form(decoded.slice(0, colon)), secret: form(decoded.slice(colon + 1)) };
   } catch {
-    return null;
+    return 'bad';
   }
 }
 
@@ -90,7 +91,7 @@ export function createOAuthServer(options: OAuthServerOptions): OAuthServer {
   const issuer = options.publicUrl.origin;
   const resource = new URL('/mcp', issuer);
   const resourceString = resource.href;
-  const loopbackHttp = options.publicUrl.protocol === 'http:';
+  if (!parsePublicUrl(issuer)) throw new Error('publicUrl must be an https origin, or http on localhost');
   const registrations = new WindowLimit(10, 60_000, now);
 
   const oauthMetadata: OAuthMetadata = {
@@ -109,7 +110,6 @@ export function createOAuthServer(options: OAuthServerOptions): OAuthServer {
     oauthMetadata,
     resourceServerUrl: resource,
     resourceName: 'kordn',
-    ...(loopbackHttp && { dangerouslyAllowInsecureIssuerUrl: true }),
   };
 
   const verifier: OAuthTokenVerifier = {
@@ -125,19 +125,27 @@ export function createOAuthServer(options: OAuthServerOptions): OAuthServer {
     return new URLSearchParams(await request.text());
   }
 
-  /** The client when its credentials match its registered auth method; otherwise the 401 to send. */
+  /**
+   * The client when its credentials check out; otherwise the 401 to send. Credentials come from one source:
+   * Basic, or the form. A secret-method client may use either; a public client may present no secret at all.
+   */
   function authenticate(request: Request, params: URLSearchParams): StoredClient | Response {
-    const basic = basicCredentials(request.headers.get('authorization'));
-    const id = basic?.id ?? params.get('client_id');
-    const client = id === null ? null : store.getClient(id);
     const invalid = () => fail(401, 'invalid_client', 'Client authentication failed');
-    if (!client) return invalid();
-    let secret: string | null = null;
-    if (client.authMethod === 'client_secret_basic') {
-      if (!basic) return invalid();
+    const basic = basicCredentials(request.headers.get('authorization'));
+    if (basic === 'bad') return invalid();
+    const formId = params.get('client_id');
+    let id = formId;
+    let secret = params.get('client_secret');
+    if (basic) {
+      if ((formId !== null && formId !== basic.id) || params.has('client_secret')) return invalid();
+      id = basic.id;
       secret = basic.secret;
-    } else if (client.authMethod === 'client_secret_post') {
-      secret = params.get('client_secret');
+    }
+    const client = id === null ? null : store.getClient(id);
+    if (!client) return invalid();
+    if (client.authMethod === 'none') {
+      if (secret) return invalid();
+      secret = null;
     }
     return store.checkClientSecret(client.id, secret) ? client : invalid();
   }
@@ -241,7 +249,8 @@ export function createOAuthServer(options: OAuthServerOptions): OAuthServer {
         return handler(request);
       }
       // The SDK serves the path-suffixed protected-resource document and the AS document; the bare root document is ours.
-      if (path === WELL_KNOWN_RESOURCE && (request.method === 'GET' || request.method === 'HEAD')) {
+      if (path === WELL_KNOWN_RESOURCE) {
+        if (request.method !== 'GET' && request.method !== 'HEAD') return json(405, { error: 'invalid_request' }, { Allow: 'GET, HEAD, OPTIONS' });
         return Response.json(buildOAuthProtectedResourceMetadata(metadataOptions), { headers: { 'Access-Control-Allow-Origin': '*' } });
       }
       return oauthMetadataResponse(request, metadataOptions);

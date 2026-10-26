@@ -74,6 +74,16 @@ describe('metadata', () => {
     const res = (await server.fetch(new Request('http://localhost:3333/.well-known/oauth-protected-resource'))) as Response;
     expect((await res.json()).resource).toBe('http://localhost:3333/mcp');
   });
+  it('answers other methods on the bare root document with 405', async () => {
+    const res = await setup().call('/.well-known/oauth-protected-resource', { method: 'POST' });
+    expect(res.status).toBe(405);
+  });
+  it('rejects a non-loopback http public URL', () => {
+    const store = new OAuthStore(new DatabaseSync(':memory:'));
+    const make = (url: string) => createOAuthServer({ store, publicUrl: new URL(url), ownerToken: 'o', audit: vi.fn() });
+    expect(() => make('http://x.example')).toThrow();
+    expect(() => make('http://127.0.0.1:1')).not.toThrow();
+  });
   it('falls through for other paths', async () => {
     const { server } = setup();
     expect(await server.fetch(new Request('http://x/mcp'))).toBeUndefined();
@@ -206,7 +216,68 @@ describe('/token', () => {
   });
 });
 
+describe('client authentication', () => {
+  const basic = (id: string, secret: string) => ({ authorization: `Basic ${Buffer.from(`${id}:${secret}`).toString('base64')}` });
+  const grant = (a: { verifier: string; code: string }) =>
+    ({ grant_type: 'authorization_code', code: a.code, redirect_uri: REDIRECT, code_verifier: a.verifier });
+
+  it('rejects Basic with a different form client_id', async () => {
+    const { authorized, post } = setup();
+    const a = await authorized({ redirect_uris: [REDIRECT], token_endpoint_auth_method: 'client_secret_basic' });
+    const res = await post('/token', { ...grant(a), client_id: 'other' }, basic(a.reg.client_id as string, a.reg.client_secret as string));
+    expect(res.status).toBe(401);
+  });
+  it('accepts Basic with a matching form client_id', async () => {
+    const { authorized, post } = setup();
+    const a = await authorized({ redirect_uris: [REDIRECT], token_endpoint_auth_method: 'client_secret_basic' });
+    const res = await post('/token', { ...grant(a), client_id: a.reg.client_id as string }, basic(a.reg.client_id as string, a.reg.client_secret as string));
+    expect(res.status).toBe(200);
+  });
+  it('rejects a secret split across Basic and form', async () => {
+    const { authorized, post } = setup();
+    const a = await authorized({ redirect_uris: [REDIRECT], token_endpoint_auth_method: 'client_secret_post' });
+    const res = await post('/token', { ...grant(a), client_secret: a.reg.client_secret as string }, basic(a.reg.client_id as string, ''));
+    expect(res.status).toBe(401);
+    const both = await post('/token', { ...grant(a), client_secret: a.reg.client_secret as string }, basic(a.reg.client_id as string, a.reg.client_secret as string));
+    expect(both.status).toBe(401);
+  });
+  it('rejects a none client presenting a secret', async () => {
+    const { authorized, post } = setup();
+    const a = await authorized();
+    const viaBasic = await post('/token', grant(a), basic(a.reg.client_id as string, 'junk'));
+    expect(viaBasic.status).toBe(401);
+    const viaForm = await post('/token', { ...grant(a), client_id: a.reg.client_id as string, client_secret: 'junk' });
+    expect(viaForm.status).toBe(401);
+  });
+  it('lets secret-method clients use either method', async () => {
+    const { authorized, post } = setup();
+    const a = await authorized({ redirect_uris: [REDIRECT], token_endpoint_auth_method: 'client_secret_post' });
+    const res = await post('/token', grant(a), basic(a.reg.client_id as string, a.reg.client_secret as string));
+    expect(res.status).toBe(200);
+    const b = await authorized({ redirect_uris: [REDIRECT], token_endpoint_auth_method: 'client_secret_basic' });
+    const res2 = await post('/token', { ...grant(b), client_id: b.reg.client_id as string, client_secret: b.reg.client_secret as string });
+    expect(res2.status).toBe(200);
+  });
+  it('answers 401 for malformed Basic headers', async () => {
+    const { authorized, post } = setup();
+    const a = await authorized();
+    for (const authorization of ['Basic !!!', 'Basic bm9jb2xvbg==', `Basic ${Buffer.from('%E0%A4%A:x').toString('base64')}`]) {
+      const res = await post('/token', { ...grant(a), client_id: a.reg.client_id as string }, { authorization });
+      expect(res.status, authorization).toBe(401);
+    }
+  });
+});
+
 describe('/revoke', () => {
+  it('authenticates a client_secret_basic client', async () => {
+    const { authorized, exchange, post, server } = setup();
+    const a = await authorized({ redirect_uris: [REDIRECT], token_endpoint_auth_method: 'client_secret_basic' });
+    const t = (await (await exchange(a, { client_secret: a.reg.client_secret as string })).json()) as { access_token: string };
+    const h = { authorization: `Basic ${Buffer.from(`${a.reg.client_id}:${a.reg.client_secret}`).toString('base64')}` };
+    expect((await post('/revoke', { token: t.access_token }, { authorization: 'Basic !!!' })).status).toBe(401);
+    expect((await post('/revoke', { token: t.access_token }, h)).status).toBe(200);
+    await expect(server.verifier.verifyAccessToken(t.access_token)).rejects.toThrow();
+  });
   it('revokes an access token', async () => {
     const { authorized, exchange, post, server } = setup();
     const a = await authorized();
