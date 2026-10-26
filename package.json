@@ -18,7 +18,8 @@
   "scripts": {
     "build": "tsc && node -e \"require('node:fs').chmodSync('dist/index.js', 0o755)\"",
     "typecheck": "tsc --noEmit",
-    "test": "vitest run",
+    "test": "npm run build && vitest run",
+    "test:concurrency": "npm run build && KORDN_STRESS_RUNS=50 vitest run test/concurrency.test.ts",
     "prepack": "npm run build"
   },
   "dependencies": {

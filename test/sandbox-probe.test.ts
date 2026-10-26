@@ -36,10 +36,13 @@ function runProbe(params: ProbeParams, env: NodeJS.ProcessEnv = {}): Promise<str
   });
 }
 
+// The probe reads /proc, so its full report only exists on Linux.
+const linuxOnly = process.platform === 'linux' ? it : it.skip;
+
 const base: ProbeParams = { socketPath: '/nonexistent/kordn.sock', writeTargets: [], absentPaths: [], connect: [], timeoutMs: 1000 };
 
 describe('isolation probe', () => {
-  it('runs standalone in a fresh node process and reports the process identity', async () => {
+  linuxOnly('runs standalone in a fresh node process and reports the process identity', async () => {
     const result = parseProbeOutput(await runProbe(base));
     expect(result).not.toBeNull();
     expect(result?.uid).toBe(process.getuid?.());

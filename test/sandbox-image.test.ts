@@ -6,7 +6,7 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import policyJson from '../examples/policy.json' with { type: 'json' };
 import { createFakeGuardian } from '../src/fake-guardian.js';
 import { serveGuardianSocket } from '../src/guardian-socket.js';
-import { scanImage } from '../src/image-scan.js';
+import { scanImage } from './image-scan.js';
 import { daemonSocketPath, hardenedRunFlags, hostDockerSocketPaths, SANDBOX_SOCKET, socketFileMode } from '../src/sandbox.js';
 import { type ProbeResult, parseProbeOutput, probeScript } from '../src/sandbox-probe.js';
 import { Policy } from '../src/schema.js';
