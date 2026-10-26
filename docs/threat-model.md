@@ -60,6 +60,8 @@ T-numbers are the design doc's §11.1 cases in `test/matrix.test.ts`. Sandbox ro
 - One guardian process per data directory. Two kordn processes on the same directory aren't supported.
 - The audit log's hash chain detects edits by anything that can't rewrite both the log and its head. It doesn't protect against whoever owns the host.
 - v0.1 has no live model: the agent in the sandbox is a scripted MCP client.
+- With `--bank`, kordn's limits cover calls that go through kordn. The provider API key itself can do anything its permissions allow, so keep it out of the agent's reach and, on Stripe, use a restricted key. kordn uses test keys unless started with `--live`.
+- A provider saying "no such payout" while kordn is serving keeps the quota held, since the request may still be in flight. Only the check at startup treats it as never sent.
 - The admin cookie isn't port-isolated on plain http. A hostile web server on another `127.0.0.1` port that the user visits receives it. This needs a local process, so Guard mode only. The Origin check and the CSRF token still stop cross-port CSRF.
 
 ## Not logged
