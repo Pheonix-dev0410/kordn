@@ -1,4 +1,4 @@
-# Backend contract (#1–#8)
+# Backend contract
 
 The real backend implements the shared `Guardian` interface in `src/guardian-api.ts`
 and the four tool schemas in `src/schema.ts`. It assumes hostile tool arguments and
@@ -8,7 +8,7 @@ server from main can consume this implementation directly.
 
 ## Trusted setup
 
-Use patched Node.js 24.22.1+ (24.x) or 26.12.1+ (26.x). Database constructors require
+Use the latest Node.js 24 or 26 patch release. Database constructors require
 private parent directories (`0700`), restrict files to `0600`, and reject symlinks
 and hard links. Keep SQLite WAL files in that directory. Use separate persistent
 paths for the guardian and bank; `:memory:` is only for disposable tests.
@@ -106,18 +106,19 @@ Use `serveGuardianSocket` from `src/guardian-socket.ts`; there is one server
 implementation. It binds identity to the supplied agent ID and socket endpoint,
 not payload fields. The trusted launcher owns the private socket directory,
 permissions, namespace UID/GID mapping, and cleanup of a confirmed stale socket.
-A same-host-UID fixture can use `0600`. Container UID 10001 does not automatically
-map to the host socket owner: verify ownership/group access inside the actual
-rootless sandbox and deny access to other agents. Never use world-writable access
-as a substitute. This Linux integration gate remains pending in #11/#12.
+`runContain` puts the socket in a fresh `0700` directory and bind-mounts only the
+socket file. With rootful Docker the container runs as the host user and the socket
+is `0600`. With rootless Docker the container user is a subordinate ID, so the socket
+is `0666` and only reachable through the bind mount; the private directory keeps
+other host users out. See docs/contain.md.
 
 The protocol uses newline-delimited `SocketRequest`/`SocketResponse`. Invalid or
 oversized frames close the connection before reaching the guardian. The shared
 server bounds frames, queued calls, unread responses, idle time, and connections
 (default 32). Its incomplete-frame deadline defaults to 30 seconds and is not
-extended by trickling bytes. The client helper in `src/guardian-client.ts` forwards
-raw tool arguments, uses an absolute response deadline, and returns the tool result
-or throws a safe coded error. It never falls back to the bank.
+extended by trickling bytes. The client in `src/guardian-client.ts` (used by
+`kordn --guardian`) forwards raw tool arguments, uses an absolute deadline, and
+turns any failure into `INTERNAL_UNAVAILABLE`. It never falls back to the bank.
 
 ## Validation
 

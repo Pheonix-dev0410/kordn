@@ -2,9 +2,7 @@
 
 A firewall for AI agents. kordn is an MCP server that sits between an agent and the actions it can take, and enforces limits you set (which payees, how much money, how many calls) outside the model. A prompt injection can change what the agent tries. It can't change what kordn allows.
 
-v0.1 protects a mock bank with fake money only. Don't connect it to real accounts.
-
-> Status: alpha. The guardian, MCP server, admin UI and Contain sandbox work ([roadmap](../../issues/19)).
+> **v0.1.0-alpha is experimental.** It protects a mock bank with fake money only. Don't connect it to real accounts or rely on it for real money.
 
 ## Setup
 
@@ -131,11 +129,12 @@ docs/        threat model, Contain mode and the full design doc
 
 ```sh
 npm run typecheck
-npm test
-npm run test:concurrency # 50 rounds of concurrency and process-crash tests
+npm test                                  # includes the design doc's T01-T20 (test/matrix.test.ts) and the attack tests
+KORDN_DOCKER_TESTS=1 npm test             # also the sandbox tests, on Linux with Docker
+npm run test:concurrency                  # 50 rounds of concurrency and process-crash tests
 ```
 
-Make a branch for each issue, open a pull request into `main`, and link the issue.
+Make a branch for each issue, open a pull request into `main`, and link the issue. Report security problems privately through GitHub's security advisories, not in issues.
 
 ## License
 

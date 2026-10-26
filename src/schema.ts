@@ -2,7 +2,7 @@ import { z } from 'zod';
 
 // Shared schemas and types. Every object is strict: unknown keys are rejected.
 
-export const MAX_AMOUNT_MINOR = 1_000_000_000_00;
+export const MAX_AMOUNT_MINOR = 100_000_000_000;
 
 export const AgentId = z.string().regex(/^[a-z0-9][a-z0-9-]{0,62}$/);
 export const ResourceId = z.string().regex(/^mock-bank:[a-z0-9-]{1,64}$/);
