@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { constants } from 'node:os';
 import { parseArgs } from 'node:util';
 import { serveStdio } from '@modelcontextprotocol/server/stdio';
@@ -9,15 +10,17 @@ import type { Mode } from './admin/pages.js';
 import { startAdminServer } from './admin/server.js';
 import type { Guardian } from './guardian-api.js';
 import { createGuardianClient } from './guardian-client.js';
-import { serveHttp } from './http.js';
+import { MIN_TOKEN_LENGTH, serveHttp } from './http.js';
 import { createMcpServer } from './mcp-server.js';
+import { createOAuthServer, parsePublicUrl } from './oauth/server.js';
+import { OAuthStore } from './oauth/store.js';
 import { assertContainPlatform, formatReport, reapStaleContainers, runContain } from './sandbox.js';
 import { Policy } from './schema.js';
 
 // The kordn CLI and the only place arguments are parsed. stdout belongs to the MCP
 // stdio transport, so everything human-readable goes to stderr.
 
-const USAGE = `usage: kordn [--policy <path>] [--data <dir>] [--bank <path> [--live]] [--guardian <socket>] [--http [--port <n>] [--allowed-host <name>]...] [--admin [--admin-port <n>]]
+const USAGE = `usage: kordn [--policy <path>] [--data <dir>] [--bank <path> [--live]] [--guardian <socket>] [--http [--port <n>] [--allowed-host <name>]... [--public-url <url>]] [--admin [--admin-port <n>]]
        kordn contain [--image <ref>] [--policy <path>] [--data <dir>] [--bank <path> [--live]] [--require-contain] [--admin [--admin-port <n>]] [-- <command>...]
 
   (default)              MCP over stdio, guardian in-process (Guard mode)
@@ -31,6 +34,7 @@ const USAGE = `usage: kordn [--policy <path>] [--data <dir>] [--bank <path> [--l
   --http                 Streamable HTTP at http://127.0.0.1:<port>/mcp, needs KORDN_TOKEN
   --port <n>             HTTP port (default 3333)
   --allowed-host <name>  also accept this Host/Origin, e.g. a tunnel's public hostname
+  --public-url <url>     turn on OAuth for apps like ChatGPT and claude.ai; the tunnel's https origin
   --admin                admin UI on 127.0.0.1; its URL and login token go to stderr and to
                          $XDG_RUNTIME_DIR/kordn/admin-<pid>.json
   --admin-port <n>       admin UI port (default 0: any free port)
@@ -77,6 +81,7 @@ interface Options {
   http: boolean;
   port: number;
   allowedHosts: string[];
+  publicUrl?: URL;
   admin: boolean;
   adminPort: number;
   help: boolean;
@@ -115,6 +120,12 @@ function adminPortOption(values: { admin: boolean; 'admin-port'?: string }): num
   return portOption(values['admin-port'], '--admin-port');
 }
 
+function publicUrlOption(value: string): URL {
+  const url = parsePublicUrl(value);
+  if (!url) throw new UsageError('--public-url takes an https origin, e.g. https://kordn.example.net (http only for localhost)');
+  return url;
+}
+
 function parse(argv: string[]): Options {
   const { values } = parseOrUsage(() =>
     parseArgs({
@@ -130,6 +141,7 @@ function parse(argv: string[]): Options {
         http: { type: 'boolean', default: false },
         port: { type: 'string' },
         'allowed-host': { type: 'string', multiple: true },
+        'public-url': { type: 'string' },
         admin: { type: 'boolean', default: false },
         'admin-port': { type: 'string' },
         help: { type: 'boolean', short: 'h', default: false },
@@ -143,6 +155,10 @@ function parse(argv: string[]): Options {
   if (values.admin && values.guardian !== undefined) {
     throw new UsageError('--admin and --guardian conflict: the admin UI runs where the guardian runs');
   }
+  if (values['public-url'] !== undefined && values.guardian !== undefined) {
+    throw new UsageError('--public-url and --guardian conflict: OAuth state lives where the guardian runs');
+  }
+  if (!values.http && values['public-url'] !== undefined) throw new UsageError('--public-url needs --http');
   if (!values.http && (values.port !== undefined || values['allowed-host'] !== undefined)) {
     throw new UsageError('--port and --allowed-host need --http');
   }
@@ -155,6 +171,7 @@ function parse(argv: string[]): Options {
     http: values.http,
     port: values.port === undefined ? DEFAULT_PORT : portOption(values.port, '--port'),
     allowedHosts: (values['allowed-host'] ?? []).map(allowedHost),
+    publicUrl: values['public-url'] === undefined ? undefined : publicUrlOption(values['public-url']),
     admin: values.admin,
     adminPort: adminPortOption(values),
     help: values.help,
@@ -319,6 +336,11 @@ async function serve(options: Options, env: NodeJS.ProcessEnv): Promise<void> {
     agentId = policy.agentId;
     handleCall = (agent, tool, args) => local.handleCall(agent, tool, args);
   }
+  // Before anything OAuth-related is opened, so a bad token leaves no oauth.sqlite behind.
+  const token = env.KORDN_TOKEN ?? '';
+  if (options.http && options.publicUrl && token.length < MIN_TOKEN_LENGTH) {
+    throw new Error(`KORDN_TOKEN must be set to a random secret of at least ${MIN_TOKEN_LENGTH} characters`);
+  }
   const factory = () => createMcpServer({ agentId, handleCall });
 
   // Installed before anything starts, so a signal during startup still shuts down what's up.
@@ -326,23 +348,41 @@ async function serve(options: Options, env: NodeJS.ProcessEnv): Promise<void> {
   if (options.http || options.admin) {
     onStopSignal(() => void Promise.allSettled(closers.map((close) => close())).finally(() => process.exit(0)));
   }
+  // After openGuardian, which created the 0700 data dir; before the admin UI, which will share it.
+  let oauthStore: OAuthStore | undefined;
+  if (options.publicUrl && guardian) {
+    const { defaultDataDir } = await import('./local-guardian.js');
+    const store = OAuthStore.open(join(options.data ?? defaultDataDir(), 'oauth.sqlite'));
+    oauthStore = store;
+    closers.push(async () => store.close());
+  }
   // Outside a sandbox there is nothing to check, so the admin UI says Guard.
   const admin = options.admin && guardian ? await startAdmin(guardian, agentId, 'guard', options.adminPort) : undefined;
   const closeAdmin = admin?.close;
   if (closeAdmin) closers.push(closeAdmin);
 
   if (options.http) {
-    const token = env.KORDN_TOKEN ?? '';
     let http;
     try {
-      http = await serveHttp({ factory, token, port: options.port, allowedHosts: options.allowedHosts });
+      const oauth =
+        oauthStore && options.publicUrl && guardian
+          ? createOAuthServer({
+              store: oauthStore,
+              publicUrl: options.publicUrl,
+              ownerToken: token,
+              audit: (event, app) => void guardian.recordOAuthEvent(event, app),
+            })
+          : undefined;
+      http = await serveHttp({ factory, token, port: options.port, allowedHosts: options.allowedHosts, oauth });
     } catch (error) {
       await closeAdmin?.();
+      oauthStore?.close();
       throw error;
     }
     const server = http;
     closers.push(() => server.close());
     process.stderr.write(`kordn: serving MCP at ${http.url}\n`);
+    if (options.publicUrl) process.stderr.write(`kordn: OAuth on for ${options.publicUrl.origin}/mcp\n`);
     return;
   }
 

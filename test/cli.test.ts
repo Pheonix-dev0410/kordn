@@ -626,3 +626,35 @@ describe.runIf(process.platform === 'linux')('kordn contain (fake docker)', () =
     expect(stderr).not.toMatch(/\n\s+at /);
   });
 });
+
+describe('--public-url', () => {
+  it.each([
+    [['--public-url', 'https://x.example'], /needs --http/],
+    [['--public-url', 'https://x.example', '--guardian', '/tmp/s'], /conflict/],
+    [['--http', '--public-url', 'http://x.example'], /takes an https origin/],
+    [['--http', '--public-url', 'https://x.example/path'], /takes an https origin/],
+  ])('rejects %j', async (args, message) => {
+    const { code, stderr } = await run(args, { KORDN_TOKEN: 'x'.repeat(32) });
+    expect(code).toBe(2);
+    expect(stderr).toMatch(message);
+  });
+
+  it('refuses a short KORDN_TOKEN without creating the OAuth database', async () => {
+    const data = tempDir();
+    chmodSync(data, 0o700);
+    const { code, stderr } = await run(['--http', '--port', '0', '--public-url', 'https://x.example', '--data', data], { KORDN_TOKEN: 'x'.repeat(31) });
+    expect(code).toBe(1);
+    expect(stderr).toMatch(/KORDN_TOKEN must be set/);
+    expect(existsSync(join(data, 'oauth.sqlite'))).toBe(false);
+  });
+
+  it('turns OAuth on and keeps its database private', async () => {
+    const data = tempDir();
+    chmodSync(data, 0o700);
+    const kordn = spawnCli(['--http', '--port', '0', '--public-url', 'https://x.example/', '--data', data], { KORDN_TOKEN: 'y'.repeat(32) });
+    await kordn.waitForStderr(/kordn: OAuth on for https:\/\/x\.example\/mcp\n/);
+    expect(statSync(join(data, 'oauth.sqlite')).mode & 0o777).toBe(0o600);
+    kordn.child.kill('SIGTERM');
+    expect((await kordn.exited).code).toBe(0);
+  });
+});
