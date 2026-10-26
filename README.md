@@ -17,6 +17,14 @@ npm install
 npm run build
 ```
 
+## See it work
+
+```sh
+npm run demo
+```
+
+A scripted agent does the worst it can against a throwaway copy of the mock bank: obeys a memo telling it to pay an attacker, splits the payment into ten $50s at once, tries to leave the sandbox (Linux with Docker only), keeps going after you press Stop, and retries a transfer whose bank response was lost across a restart. The demo prints what kordn allowed and what the bank actually sent.
+
 ## Connect to an AI client
 
 **Claude Code**

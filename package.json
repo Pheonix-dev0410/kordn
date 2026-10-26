@@ -20,6 +20,7 @@
     "typecheck": "tsc --noEmit",
     "test": "npm run build && vitest run",
     "test:concurrency": "npm run build && KORDN_STRESS_RUNS=50 vitest run test/concurrency.test.ts",
+    "demo": "npm run build && node --disable-warning=ExperimentalWarning dist/demo.js",
     "prepack": "npm run build"
   },
   "dependencies": {
