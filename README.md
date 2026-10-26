@@ -76,6 +76,27 @@ Anything not explicitly allowed is denied.
 
 kordn keeps its ledger, audit log and the mock bank in `~/.local/state/kordn` (`--data <dir>` to change it), so limits hold across restarts. `examples/policy.json` is only read on the first run; after that the stored policy is used, including edits from the admin UI. To replace it, start kordn with `--policy /path/to/policy.json`. Stopping the agent in the admin UI is permanent for that agent id: to start over, delete the data directory.
 
+## Use your own payment account (test mode)
+
+By default kordn guards a mock bank. It can also guard your own **RazorpayX** account (India, INR payouts) or **Stripe** account (USD transfers to connected accounts). The agent still gets only the four tools above; your API key stays with kordn.
+
+1. In your provider's **test mode**, get API keys and an id for each payee:
+   - RazorpayX: a `rzp_test_` key id and secret, your account number, and a fund account (`fa_…`) per payee.
+   - Stripe: a `sk_test_` key (a restricted key that can create transfers and read your balance is enough) and a connected account (`acct_…`) per payee.
+2. Copy `examples/bank-razorpayx.json` or `examples/bank-stripe.json` and fill in the ids. Every payee in your policy needs one.
+3. In your policy, set `resourceId` to `razorpayx:main` and `currency` to `INR` (amounts in paise), or `stripe:main` and `USD` (amounts in cents).
+4. Start kordn with the keys in the environment, never in a file:
+
+```sh
+claude mcp add kordn \
+  -e RAZORPAY_KEY_ID=rzp_test_... -e RAZORPAY_KEY_SECRET=... \
+  -- node /absolute/path/to/kordn/dist/index.js --policy /path/to/my-policy.json --bank /path/to/my-bank.json --data ~/.local/state/kordn-razorpayx
+```
+
+For Stripe, set `STRIPE_API_KEY` instead. kordn refuses live keys unless you add `--live`; with it, real money moves, at your own risk.
+
+RazorpayX often answers that a payout is still processing. kordn reports it as `unknown` and keeps it counted against your limits until RazorpayX says processed or failed. It checks every 30 seconds and whenever the agent asks for the transfer's status.
+
 ## Approve transfers: the admin UI
 
 Add `--admin` to get a local web page where you approve or reject pending transfers, see what the agent did, edit the policy, and stop the agent:

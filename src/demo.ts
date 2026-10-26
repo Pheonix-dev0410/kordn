@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { Writable } from 'node:stream';
 import { type LocalGuardian, openLocalGuardian } from './local-guardian.js';
+import { MockBankAdapter } from './mock-bank.js';
 import { runContain } from './sandbox.js';
 import { Policy, TOOL_NAMES } from './schema.js';
 
@@ -16,18 +17,22 @@ const dirs: string[] = [];
 const out = (line = ''): void => void process.stdout.write(`${line}\n`);
 const usd = (minor: number) => `$${(minor / 100).toFixed(2)}`;
 
-async function open(dir = mkdtempSync(join(tmpdir(), 'kordn-demo-'))): Promise<LocalGuardian & { dir: string }> {
+type Demo = LocalGuardian & { bank: MockBankAdapter; dir: string };
+
+async function open(dir = mkdtempSync(join(tmpdir(), 'kordn-demo-'))): Promise<Demo> {
   dirs.push(dir);
-  return { ...(await openLocalGuardian(dir, policy)), dir };
+  let bank: MockBankAdapter | undefined;
+  const kordn = await openLocalGuardian(dir, policy, false, () => (bank = new MockBankAdapter(join(dir, 'bank.sqlite'))));
+  return { ...kordn, bank: bank!, dir };
 }
 
-function sent(kordn: LocalGuardian): { count: number; total: number } {
+function sent(kordn: Demo): { count: number; total: number } {
   const row = kordn.bank.db.prepare('SELECT COUNT(*) AS n, COALESCE(SUM(amount_minor), 0) AS t FROM bank_transfers').get() as { n: number; t: number };
   return { count: Number(row.n), total: Number(row.t) };
 }
 
 let key = 0;
-async function pay(kordn: LocalGuardian, payeeId: string, amountMinor: number, idempotencyKey = `demo-key-${String(++key).padStart(4, '0')}`) {
+async function pay(kordn: Demo, payeeId: string, amountMinor: number, idempotencyKey = `demo-key-${String(++key).padStart(4, '0')}`) {
   const args = { resourceId: policy.resourceId, payeeId, amountMinor, currency: 'USD', idempotencyKey };
   const result = await kordn.guardian.handleCall(policy.agentId, 'af_propose_transfer', args);
   return result.ok ? (result.result as { state: string; transferRef: string }) : { denied: result.error.code };

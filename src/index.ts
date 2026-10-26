@@ -17,13 +17,16 @@ import { Policy } from './schema.js';
 // The kordn CLI and the only place arguments are parsed. stdout belongs to the MCP
 // stdio transport, so everything human-readable goes to stderr.
 
-const USAGE = `usage: kordn [--policy <path>] [--data <dir>] [--guardian <socket>] [--http [--port <n>] [--allowed-host <name>]...] [--admin [--admin-port <n>]]
-       kordn contain [--image <ref>] [--policy <path>] [--data <dir>] [--require-contain] [--admin [--admin-port <n>]] [-- <command>...]
+const USAGE = `usage: kordn [--policy <path>] [--data <dir>] [--bank <path> [--live]] [--guardian <socket>] [--http [--port <n>] [--allowed-host <name>]...] [--admin [--admin-port <n>]]
+       kordn contain [--image <ref>] [--policy <path>] [--data <dir>] [--bank <path> [--live]] [--require-contain] [--admin [--admin-port <n>]] [-- <command>...]
 
   (default)              MCP over stdio, guardian in-process (Guard mode)
   --policy <path>        policy file; replaces the stored policy (default: examples/policy.json,
                          used only on first run)
   --data <dir>           where the ledger and mock bank live (default: ~/.local/state/kordn)
+  --bank <path>          a real payment provider instead of the mock bank (razorpayx or stripe);
+                         keys come from the environment, test keys only
+  --live                 allow live provider keys: real money moves
   --guardian <socket>    forward every call to the guardian on this Unix socket (Contain mode)
   --http                 Streamable HTTP at http://127.0.0.1:<port>/mcp, needs KORDN_TOKEN
   --port <n>             HTTP port (default 3333)
@@ -45,9 +48,16 @@ process.on('warning', (warning) => {
   process.stderr.write(`${warning.name}: ${warning.message}\n`);
 });
 
-async function openGuardian(dir: string | undefined, policy: Policy, replacePolicy: boolean) {
+async function openGuardian(options: { data?: string; policy?: string; bank?: string; live: boolean }, policy: Policy) {
   const { defaultDataDir, openLocalGuardian } = await import('./local-guardian.js');
-  return openLocalGuardian(dir ?? defaultDataDir(), policy, replacePolicy);
+  const { loadBankConfig, openBank } = await import('./bank-config.js');
+  const bank = options.bank === undefined ? undefined : loadBankConfig(options.bank);
+  return openLocalGuardian(
+    options.data ?? defaultDataDir(),
+    policy,
+    options.policy !== undefined,
+    bank && ((enforced) => openBank(bank, enforced, process.env, options.live)),
+  );
 }
 
 const DEFAULT_POLICY = new URL('../examples/policy.json', import.meta.url);
@@ -61,6 +71,8 @@ class UsageError extends Error {}
 interface Options {
   policy?: string;
   data?: string;
+  bank?: string;
+  live: boolean;
   guardian?: string;
   http: boolean;
   port: number;
@@ -73,6 +85,8 @@ interface Options {
 interface ContainOptions {
   policy?: string;
   data?: string;
+  bank?: string;
+  live: boolean;
   image: string;
   requireContain: boolean;
   /** Replaces the image's command when given. */
@@ -110,6 +124,8 @@ function parse(argv: string[]): Options {
       options: {
         policy: { type: 'string' },
         data: { type: 'string' },
+        bank: { type: 'string' },
+        live: { type: 'boolean', default: false },
         guardian: { type: 'string' },
         http: { type: 'boolean', default: false },
         port: { type: 'string' },
@@ -120,9 +136,10 @@ function parse(argv: string[]): Options {
       },
     }),
   );
-  if ((values.policy !== undefined || values.data !== undefined) && values.guardian !== undefined) {
-    throw new UsageError('--policy and --data conflict with --guardian: in Contain mode the guardian owns them');
+  if ((values.policy !== undefined || values.data !== undefined || values.bank !== undefined) && values.guardian !== undefined) {
+    throw new UsageError('--policy, --data and --bank conflict with --guardian: in Contain mode the guardian owns them');
   }
+  if (values.live && values.bank === undefined) throw new UsageError('--live needs --bank');
   if (values.admin && values.guardian !== undefined) {
     throw new UsageError('--admin and --guardian conflict: the admin UI runs where the guardian runs');
   }
@@ -132,6 +149,8 @@ function parse(argv: string[]): Options {
   return {
     policy: values.policy,
     data: values.data,
+    bank: values.bank,
+    live: values.live,
     guardian: values.guardian,
     http: values.http,
     port: values.port === undefined ? DEFAULT_PORT : portOption(values.port, '--port'),
@@ -152,6 +171,8 @@ function parseContain(argv: string[]): ContainOptions {
       options: {
         policy: { type: 'string' },
         data: { type: 'string' },
+        bank: { type: 'string' },
+        live: { type: 'boolean', default: false },
         image: { type: 'string' },
         'require-contain': { type: 'boolean', default: false },
         admin: { type: 'boolean', default: false },
@@ -166,9 +187,12 @@ function parseContain(argv: string[]): ContainOptions {
     throw new UsageError(`unexpected argument ${JSON.stringify(positionals[0])}; put the agent command after --`);
   }
   if (terminator !== -1 && positionals.length === 0) throw new UsageError('-- must be followed by the agent command');
+  if (values.live && values.bank === undefined) throw new UsageError('--live needs --bank');
   return {
     policy: values.policy,
     data: values.data,
+    bank: values.bank,
+    live: values.live,
     image: values.image ?? DEFAULT_IMAGE,
     requireContain: values['require-contain'],
     agentCommand: positionals.length ? positionals : undefined,
@@ -290,7 +314,7 @@ async function serve(options: Options, env: NodeJS.ProcessEnv): Promise<void> {
   } else {
     // The agent identity is the launcher's policy, not the client's.
     const policy = loadPolicy(options.policy ?? DEFAULT_POLICY);
-    const local = (await openGuardian(options.data, policy, options.policy !== undefined)).guardian;
+    const local = (await openGuardian(options, policy)).guardian;
     guardian = local;
     agentId = policy.agentId;
     handleCall = (agent, tool, args) => local.handleCall(agent, tool, args);
@@ -337,7 +361,7 @@ async function contain(options: ContainOptions): Promise<number> {
   assertContainPlatform();
   const policy = loadPolicy(options.policy ?? DEFAULT_POLICY);
   // One guardian, one agent: the policy's.
-  const local = await openGuardian(options.data, policy, options.policy !== undefined);
+  const local = await openGuardian(options, policy);
   const guardian = local.guardian;
   const controller = new AbortController();
   let stoppedBy: NodeJS.Signals | undefined;

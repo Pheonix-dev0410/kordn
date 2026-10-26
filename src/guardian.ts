@@ -57,6 +57,7 @@ export class Guardian implements GuardianApi {
           break;
         }
         case 'af_get_transfer_status': {
+          if (this.ledger.get(call.transferRef, agentId)?.state === 'UNKNOWN') await this.refreshUnknown(call.transferRef);
           const r = this.ledger.get(call.transferRef, agentId)!;
           result = { state: r.state, reasonCode: r.reasonCode, updatedAt: new Date(r.updatedMs).toISOString() };
           break;
@@ -127,6 +128,26 @@ export class Guardian implements GuardianApi {
         result.state === 'failed' ? 'ADAPTER_FAILED' : null, 'transfer.reconciled');
     }
     this.expirePending();
+  }
+
+  /**
+   * Asks the adapter about transfers left UNKNOWN (a payout still processing, a lost reply) and
+   * records a definite outcome. Safe while serving: it never touches DISPATCHING, so a call in
+   * flight isn't raced, and "never executed" keeps the quota held; only reconcile() at startup
+   * trusts that answer.
+   */
+  async refreshUnknown(id?: string): Promise<void> {
+    for (const r of this.ledger.listByState(this.agentId, ['UNKNOWN'])) {
+      if (id !== undefined && r.id !== id) continue;
+      let result: AdapterResult;
+      try { result = this.outcome(await this.deadline(() => this.adapter.reconcile(r.id))); }
+      catch { continue; }
+      if (result.state === 'unknown' || (result.state === 'failed' && result.reasonCode === 'NOT_EXECUTED')) continue;
+      try {
+        this.ledger.transition(r.id, result.state === 'succeeded' ? 'SUCCEEDED' : 'FAILED',
+          result.state === 'failed' ? 'ADAPTER_FAILED' : null, 'transfer.reconciled');
+      } catch { /* Settled meanwhile by another refresh. */ }
+    }
   }
 
   private expirePending(): void {

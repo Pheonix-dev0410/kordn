@@ -1,0 +1,7 @@
+{
+  "provider": "stripe",
+  "payees": {
+    "utilities": "acct_your_connected_account_id",
+    "landlord": "acct_your_connected_account_id"
+  }
+}
