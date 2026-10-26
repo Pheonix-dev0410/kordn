@@ -57,13 +57,14 @@ T-numbers are the design doc's §11.1 cases in `test/matrix.test.ts`. Sandbox ro
 | Authorization code replayed | `invalid_grant`, and the grant is revoked | `oauth-server.test.ts`, `oauth-store.test.ts` |
 | PKCE missing, `plain` or the wrong verifier | Refused | `oauth-server.test.ts`, `oauth-pkce.test.ts` |
 | `redirect_uri` or `client_id` not registered | Error page, never a redirect | `oauth-server.test.ts` |
+| Bad `/authorize` request from a client the owner never approved, using kordn as an open redirect to its registered URI | Error page, never a redirect; only approved clients get error redirects | `oauth-server.test.ts` |
 | Consent page in a frame | `frame-ancestors 'none'` and `X-Frame-Options: DENY` | `oauth-server.test.ts`, `oauth-pages.test.ts` |
 | Wrong `KORDN_TOKEN` on the consent page | 401, then 429 once locked. This doesn't limit guessing, see Known limits | `oauth-server.test.ts` |
 | Refresh token replayed after rotation | The grant is killed and audited | `oauth-server.test.ts`, `oauth-store.test.ts` |
 | Flood of registrations | 10 a minute; 50 unapproved clients, oldest evicted; the 20 approved are untouched | `oauth-server.test.ts`, `oauth-store.test.ts` |
 | Flood of consent pages for one client | At most 5 pending requests, oldest evicted; `state` over 1024 characters refused | `oauth-store.test.ts`, `oauth-server.test.ts` |
 | Deny sent by a stranger | `access_denied`; audited only if a correct token came with it | `oauth-server.test.ts` |
-| Oversized body on an OAuth endpoint | Cut off after 64 KiB (`/register`: 8 KiB) | `oauth-flow.test.ts`, `oauth-server.test.ts` |
+| Oversized body on an OAuth endpoint | 413 over 8 KiB (`/register`) or 16 KiB (`/authorize`, `/token`, `/revoke`); the connection is dropped after at most 64 KiB more | `oauth-flow.test.ts`, `oauth-server.test.ts` |
 | Web page posting to the consent form from another origin | Refused. Browser clients are allowed only from localhost or the public origin | `oauth-flow.test.ts` |
 
 ## Known limits
@@ -80,6 +81,8 @@ T-numbers are the design doc's §11.1 cases in `test/matrix.test.ts`. Sandbox ro
 - With `--public-url` behind a tunnel, the consent page is public and anyone who finds the URL can try `KORDN_TOKEN` on it. The correct token always passes, even during a lock, so the limit (5 wrong tokens a minute, then 429 for a minute) doesn't slow a guesser: it only cuts noise and stops a stranger from keeping you from approving apps. What protects you is a `KORDN_TOKEN` of 32+ random characters (`openssl rand -hex 32`). A stranger can also register throwaway clients (10 a minute, 50 kept, oldest dropped) and open consent pages for them, but can't touch approved apps (cap 20).
 - Whoever holds `KORDN_TOKEN` can approve an app. Approved apps act as the policy's agent id, under the same limits as any other client. Registrations aren't audited: they're unauthenticated and the log is never pruned.
 - Browser clients can call the OAuth endpoints only from localhost or the public origin. ChatGPT, claude.ai and Grok exchange tokens from their servers, with no `Origin`.
+- Registration is rate-limited globally (10 a minute), so someone flooding `/register` can delay a new app's registration. Apps already registered are unaffected.
+- A quick-tunnel URL changes on every restart, and that disconnects every app: each has to be added again. kordn drops the apps registered under any other URL when it starts, and approved apps unused for 30 days, so stale approvals don't hold places among the 20.
 
 ## Not logged
 

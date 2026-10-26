@@ -69,6 +69,8 @@ KORDN_TOKEN=<random-secret> node dist/index.js --http --port 3333 --public-url h
 
 `--public-url` turns OAuth on, needs `--http` and doesn't work with `--guardian`. It also allows the tunnel's host, so `--allowed-host` isn't needed. `KORDN_TOKEN` must be 32+ random characters (`openssl rand -hex 32`): it's the one thing standing between a stranger who finds the URL and your approval page. The connector's address is `https://<tunnel-host>/mcp`.
 
+Give kordn a public hostname that stays the same: a named Cloudflare tunnel, an ngrok static domain or Tailscale Funnel. A quick tunnel like the one above gets a new URL every time it starts, and each connector is tied to the URL it was added with. After a restart on a new URL every connector stops working and has to be added again; kordn forgets the apps registered under the old URL when it starts.
+
 > The per-app steps below are to be confirmed by the owner's live test.
 
 1. ChatGPT: Settings, Connectors, turn on developer mode, create a connector with the URL above, authenticating with OAuth.
@@ -77,7 +79,9 @@ KORDN_TOKEN=<random-secret> node dist/index.js --http --port 3333 --public-url h
 4. The app opens kordn's consent page. Check the redirect host shown beside the app's name (the name is whatever the app says it is) and that it belongs to the app you're adding. Then paste `KORDN_TOKEN` and press Approve.
 5. Connectors belong to your account in each app, so the same connector shows up in its phone app.
 
-Each app is listed under Apps in the admin UI, with when it was approved and last used. Press Revoke there and it stops working at once; it has to be approved again to come back. Apps get the same policy and limits as a `KORDN_TOKEN` client.
+Start kordn with `--admin` to see your apps: each one is listed under Apps in the admin UI, with when it was approved and last used. Press Revoke there and it stops working at once; it has to be approved again to come back. Apps get the same policy and limits as a `KORDN_TOKEN` client.
+
+kordn holds up to 20 connected apps; past that, approving another fails until you revoke one under Apps. An app that hasn't been used for 30 days gives up its place and is dropped; approve it again to bring it back.
 
 **Try it locally with MCP Inspector**
 
