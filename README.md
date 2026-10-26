@@ -44,7 +44,7 @@ claude mcp add kordn -- node /absolute/path/to/kordn/dist/index.js
 }
 ```
 
-**ChatGPT, Grok, and other clients that need a URL**
+**Codex, Cursor and clients that take a token**
 
 ```sh
 KORDN_TOKEN=<random-secret> node dist/index.js --http --port 3333
@@ -57,6 +57,38 @@ Clients running in the cloud need a public HTTPS URL, so put it behind a tunnel 
 ```sh
 KORDN_TOKEN=<random-secret> node dist/index.js --http --port 3333 --allowed-host <your-tunnel-hostname>
 ```
+
+**ChatGPT, claude.ai and Grok (OAuth)**
+
+These apps have no field for a token. They sign in with OAuth, so kordn acts as a small OAuth server for you alone. Nothing is hosted and there is no third-party login. Add `--public-url` with the public address of your tunnel:
+
+```sh
+cloudflared tunnel --url http://localhost:3333     # prints https://<tunnel-host>
+KORDN_TOKEN=<random-secret> node dist/index.js --http --port 3333 --public-url https://<tunnel-host> --admin
+```
+
+`--public-url` turns OAuth on, needs `--http` and doesn't work with `--guardian`. It also allows the tunnel's host, so `--allowed-host` isn't needed. `KORDN_TOKEN` must be 32+ random characters (`openssl rand -hex 32`): it's the one thing standing between a stranger who finds the URL and your approval page. The connector's address is `https://<tunnel-host>/mcp`.
+
+> The per-app steps below are to be confirmed by the owner's live test.
+
+1. ChatGPT: Settings, Connectors, turn on developer mode, create a connector with the URL above, authenticating with OAuth.
+2. claude.ai: Settings, Connectors, Add custom connector, paste the URL.
+3. Grok: add a custom MCP connector with the URL.
+4. The app opens kordn's consent page. Check the redirect host shown beside the app's name (the name is whatever the app says it is) and that it belongs to the app you're adding. Then paste `KORDN_TOKEN` and press Approve.
+5. Connectors belong to your account in each app, so the same connector shows up in its phone app.
+
+Each app is listed under Apps in the admin UI, with when it was approved and last used. Press Revoke there and it stops working at once; it has to be approved again to come back. Apps get the same policy and limits as a `KORDN_TOKEN` client.
+
+**Try it locally with MCP Inspector**
+
+> To be confirmed by the owner's live test.
+
+```sh
+KORDN_TOKEN=<random-secret> node dist/index.js --http --port 3333 --public-url http://localhost:3333 --admin
+npx @modelcontextprotocol/inspector
+```
+
+In Inspector choose transport Streamable HTTP, enter `http://localhost:3333/mcp`, and connect. Approve on the kordn page with the token, then run `tools/list`.
 
 ## Set your limits
 

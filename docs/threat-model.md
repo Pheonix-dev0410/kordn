@@ -52,6 +52,19 @@ T-numbers are the design doc's §11.1 cases in `test/matrix.test.ts`. Sandbox ro
 | Page on a rebinding domain calling the admin UI (bad `Host`) | Rejected | `admin-server.test.ts` |
 | HTML in text shown in the admin UI | Rendered as text | T20, `admin-approvals.test.ts` |
 | Flood of approve or reject submissions | Rate limited (429) | `admin-approvals.test.ts` |
+| Stolen, expired or revoked OAuth access token, or none | 401 with `resource_metadata` | `oauth-flow.test.ts` |
+| Access token issued for another resource | 401 | `oauth-flow.test.ts`, `oauth-store.test.ts` |
+| Authorization code replayed | `invalid_grant`, and the grant is revoked | `oauth-server.test.ts`, `oauth-store.test.ts` |
+| PKCE missing, `plain` or the wrong verifier | Refused | `oauth-server.test.ts`, `oauth-pkce.test.ts` |
+| `redirect_uri` or `client_id` not registered | Error page, never a redirect | `oauth-server.test.ts` |
+| Consent page in a frame | `frame-ancestors 'none'` and `X-Frame-Options: DENY` | `oauth-server.test.ts`, `oauth-pages.test.ts` |
+| Wrong `KORDN_TOKEN` on the consent page | 401, then 429 once locked. This doesn't limit guessing, see Known limits | `oauth-server.test.ts` |
+| Refresh token replayed after rotation | The grant is killed and audited | `oauth-server.test.ts`, `oauth-store.test.ts` |
+| Flood of registrations | 10 a minute; 50 unapproved clients, oldest evicted; the 20 approved are untouched | `oauth-server.test.ts`, `oauth-store.test.ts` |
+| Flood of consent pages for one client | At most 5 pending requests, oldest evicted; `state` over 1024 characters refused | `oauth-store.test.ts`, `oauth-server.test.ts` |
+| Deny sent by a stranger | `access_denied`; audited only if a correct token came with it | `oauth-server.test.ts` |
+| Oversized body on an OAuth endpoint | Cut off after 64 KiB (`/register`: 8 KiB) | `oauth-flow.test.ts`, `oauth-server.test.ts` |
+| Web page posting to the consent form from another origin | Refused. Browser clients are allowed only from localhost or the public origin | `oauth-flow.test.ts` |
 
 ## Known limits
 
@@ -64,6 +77,9 @@ T-numbers are the design doc's §11.1 cases in `test/matrix.test.ts`. Sandbox ro
 - PayPal has no lookup by our id, so reconcile sends a $0 payout with the same `sender_batch_id`. This relies on PayPal checking the duplicate id before the amount (tested against the sandbox on 2026-10-27) and on its 30-day duplicate window. A payout still unknown after 30 days could be misread as never sent.
 - A provider saying "no such payout" while kordn is serving keeps the quota held, since the request may still be in flight. Only the check at startup treats it as never sent.
 - The admin cookie isn't port-isolated on plain http. A hostile web server on another `127.0.0.1` port that the user visits receives it. This needs a local process, so Guard mode only. The Origin check and the CSRF token still stop cross-port CSRF.
+- With `--public-url` behind a tunnel, the consent page is public and anyone who finds the URL can try `KORDN_TOKEN` on it. The correct token always passes, even during a lock, so the limit (5 wrong tokens a minute, then 429 for a minute) doesn't slow a guesser: it only cuts noise and stops a stranger from keeping you from approving apps. What protects you is a `KORDN_TOKEN` of 32+ random characters (`openssl rand -hex 32`). A stranger can also register throwaway clients (10 a minute, 50 kept, oldest dropped) and open consent pages for them, but can't touch approved apps (cap 20).
+- Whoever holds `KORDN_TOKEN` can approve an app. Approved apps act as the policy's agent id, under the same limits as any other client. Registrations aren't audited: they're unauthenticated and the log is never pruned.
+- Browser clients can call the OAuth endpoints only from localhost or the public origin. ChatGPT, claude.ai and Grok exchange tokens from their servers, with no `Origin`.
 
 ## Not logged
 
