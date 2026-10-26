@@ -33,7 +33,10 @@ export const ProbeResult = z.strictObject({
   /** Interface name of every IPv4 / IPv6 route. */
   ipv4Routes: Lines,
   ipv6Routes: Lines,
-  mounts: z.array(z.strictObject({ mountPoint: z.string(), fsType: z.string(), source: z.string(), options: z.string() })).nullable(),
+  /** From /proc/self/mountinfo. `root` is the path within the source filesystem (not "/" for a bind of a subdirectory). */
+  mounts: z
+    .array(z.strictObject({ mountPoint: z.string(), root: z.string(), fsType: z.string(), source: z.string(), options: z.string() }))
+    .nullable(),
   writes: z.array(z.strictObject({ path: z.string(), result: Outcome })),
   paths: z.array(z.strictObject({ path: z.string(), result: Outcome })),
   connects: z.array(z.strictObject({ host: z.string(), port: z.number().int(), result: Outcome })),
@@ -41,6 +44,8 @@ export const ProbeResult = z.strictObject({
   pidsMax: Outcome,
   memoryMax: Outcome,
   pid1: Lines,
+  /** readlink of /proc/self/ns/<kind>, e.g. "net:[4026531833]", or "error:<code>". */
+  namespaces: z.record(z.string(), Outcome),
   socket: z.strictObject({ connected: z.boolean(), error: Outcome.nullable(), response: z.unknown() }),
 });
 export type ProbeResult = z.infer<typeof ProbeResult>;
@@ -112,7 +117,7 @@ export async function isolationProbe(params: ProbeParams): Promise<ProbeResult> 
           const [left = '', right = ''] = l.split(' - ');
           const f = left.split(' ');
           const r = right.split(' ');
-          return { mountPoint: unescape(f[4] ?? ''), options: f[5] ?? '', fsType: r[0] ?? '', source: unescape(r[1] ?? '') };
+          return { mountPoint: unescape(f[4] ?? ''), root: unescape(f[3] ?? ''), options: f[5] ?? '', fsType: r[0] ?? '', source: unescape(r[1] ?? '') };
         });
 
   const writes = params.writeTargets.map((dir) => {
@@ -182,6 +187,14 @@ export async function isolationProbe(params: ProbeParams): Promise<ProbeResult> 
   });
 
   const pid1 = read('/proc/1/cmdline');
+  const namespaces: Record<string, string> = {};
+  for (const ns of ['cgroup', 'ipc', 'mnt', 'net', 'pid', 'user', 'uts']) {
+    try {
+      namespaces[ns] = fs.readlinkSync(`/proc/self/ns/${ns}`);
+    } catch (e) {
+      namespaces[ns] = `error:${code(e)}`;
+    }
+  }
 
   return {
     uid: process.getuid?.() ?? -1,
@@ -199,6 +212,7 @@ export async function isolationProbe(params: ProbeParams): Promise<ProbeResult> 
     pidsMax: orError('/sys/fs/cgroup/pids.max'),
     memoryMax: orError('/sys/fs/cgroup/memory.max'),
     pid1: pid1 === null ? null : pid1.split('\0').filter((a) => a !== ''),
+    namespaces,
     socket,
   };
 }
