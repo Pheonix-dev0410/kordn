@@ -17,6 +17,7 @@ export function defaultDataDir(env: NodeJS.ProcessEnv = process.env): string {
 
 export interface LocalGuardian {
   guardian: Guardian;
+  bank: MockBankAdapter;
   close(): void;
 }
 
@@ -38,7 +39,7 @@ export async function openLocalGuardian(dir: string, policy: Policy, replacePoli
     const guardian = new Guardian(ledger, bank, policy.agentId);
     await guardian.reconcile();
     const opened = { ledger, bank };
-    return { guardian, close: () => (opened.ledger.close(), opened.bank.close()) };
+    return { guardian, bank, close: () => (opened.ledger.close(), opened.bank.close()) };
   } catch (error) {
     ledger?.close();
     bank?.close();

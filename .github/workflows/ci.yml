@@ -29,6 +29,8 @@ jobs:
           node-version: 24
           cache: npm
       - run: npm ci
+      # The image name kordn contain and the demo use by default.
+      - run: docker build -f sandbox/Dockerfile -t kordn-sandbox .
       - run: npm test
         env:
           KORDN_DOCKER_TESTS: '1'
