@@ -6,9 +6,9 @@ import type {
   Guardian,
   PendingApproval,
   PolicyUpdateResult,
-} from './guardian-api.js';
-import { requestHash } from './hash.js';
-import { CHECKING_ACCOUNT, FIXTURE_EPOCH_MS, TRANSACTIONS, transactionDate } from './mock-bank.js';
+} from '../src/guardian-api.js';
+import { requestHash } from '../src/hash.js';
+import { CHECKING_ACCOUNT, FIXTURE_EPOCH_MS, TRANSACTIONS, transactionDate } from '../src/mock-bank.js';
 import {
   APPROVAL_TTL_SEC,
   type AuditEvent,
@@ -19,7 +19,7 @@ import {
   ToolName,
   type TransferCall,
   type TransferReasonCode,
-} from './schema.js';
+} from '../src/schema.js';
 
 // In-memory stand-in for the guardian (#6) so the MCP server and admin UI can be built
 // and tested before it lands. Enforces the per-call rules (agent, resource, allow flags,

@@ -1,7 +1,7 @@
 import { request } from 'node:http';
 import policyJson from '../examples/policy.json' with { type: 'json' };
 import { startAdminServer, type AdminServer, type AdminServerOptions } from '../src/admin/server.js';
-import { createFakeGuardian } from '../src/fake-guardian.js';
+import { createFakeGuardian } from './fake-guardian.js';
 import type { Guardian } from '../src/guardian-api.js';
 import { Policy } from '../src/schema.js';
 

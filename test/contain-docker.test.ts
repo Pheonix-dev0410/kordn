@@ -3,9 +3,10 @@ import { chmodSync, existsSync, mkdtempSync, readdirSync, rmSync, writeFileSync 
 import { createServer } from 'node:net';
 import { homedir, tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { Writable } from 'node:stream';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import policyJson from '../examples/policy.json' with { type: 'json' };
-import { createFakeGuardian } from '../src/fake-guardian.js';
+import { createFakeGuardian } from './fake-guardian.js';
 import { serveGuardianSocket } from '../src/guardian-socket.js';
 import {
   type ContainReport,
@@ -179,17 +180,31 @@ describe.skipIf(!DOCKER_TESTS)('kordn contain (Docker)', () => {
   describe('runContain', () => {
     const guardian = () => createFakeGuardian({ policy });
     const agentCommand = () => [...entrypoint, '-e', 'console.log("agent ran as", process.getuid())'];
+    /** Sinks that keep the agent's streamed stdout and stderr. */
+    const capture = () => {
+      const text = { stdout: '', stderr: '' };
+      const sink = (key: 'stdout' | 'stderr') =>
+        new Writable({
+          write(chunk: Buffer, _encoding, done) {
+            text[key] += chunk.toString('utf8');
+            done();
+          },
+        });
+      return { text, agentOutput: { stdout: sink('stdout'), stderr: sink('stderr') } };
+    };
 
     it('reports honestly, prints before the agent runs, runs the agent, and cleans up', async () => {
       const name = testName('run');
       const events: string[] = [];
       let report: ContainReport | undefined;
+      const output = capture();
       const result = await runContain({
         guardian: guardian(),
         agentId: policy.agentId,
         image,
         name,
         agentCommand: agentCommand(),
+        agentOutput: output.agentOutput,
         onReport: (r) => {
           report = r;
           events.push('report');
@@ -201,7 +216,9 @@ describe.skipIf(!DOCKER_TESTS)('kordn contain (Docker)', () => {
       expect(result.report.mode).toBe(rootless ? 'contain' : 'guard');
       expect(result.report.platform).toBe('linux');
       expect(result.report.imageId).toMatch(/^sha256:[0-9a-f]{64}$/);
-      expect(result.agent).toEqual({ exitCode: 0, stdout: `agent ran as ${process.getuid?.()}\n`, stderr: '' });
+      const expected = `agent ran as ${process.getuid?.()}\n`;
+      expect(result.agent).toEqual({ exitCode: 0, signal: null, timedOut: false, outputBytes: expected.length, truncated: false });
+      expect(output.text).toEqual({ stdout: `agent | ${expected}`, stderr: '' });
       expect((await docker(['inspect', '--type', 'container', name])).code).not.toBe(0);
       expect(readdirSync(tmpdir()).filter((d) => d.startsWith(`${name}-`))).toEqual([]);
     }, 120_000);
@@ -275,8 +292,17 @@ describe.skipIf(!DOCKER_TESTS)('kordn contain (Docker)', () => {
 
     it('runs the default agent through kordn (needs the MCP server from #9)', async (ctx) => {
       if (!imageHasServer) ctx.skip();
-      const result = await runContain({ guardian: guardian(), agentId: policy.agentId, image, name: testName('agent'), onReport: () => {} });
-      expect(result.agent?.exitCode, result.agent?.stderr).toBe(0);
+      const output = capture();
+      const result = await runContain({
+        guardian: guardian(),
+        agentId: policy.agentId,
+        image,
+        name: testName('agent'),
+        agentOutput: output.agentOutput,
+        onReport: () => {},
+      });
+      expect(result.agent?.exitCode, output.text.stderr).toBe(0);
+      expect(output.text.stdout).toContain('"step":"tools/call"');
     }, 120_000);
   });
 

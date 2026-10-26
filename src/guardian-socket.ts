@@ -45,7 +45,13 @@ export function serveGuardianSocket(
   socketPath: string,
   options: GuardianSocketOptions = {},
 ): Promise<Server> {
-  const limits = { ...DEFAULTS, ...options };
+  // Spreading would let an explicit `undefined` replace the default.
+  const limits: Required<GuardianSocketOptions> = {
+    maxConnections: options.maxConnections ?? DEFAULTS.maxConnections,
+    maxInFlight: options.maxInFlight ?? DEFAULTS.maxInFlight,
+    idleTimeoutMs: options.idleTimeoutMs ?? DEFAULTS.idleTimeoutMs,
+    frameTimeoutMs: options.frameTimeoutMs ?? DEFAULTS.frameTimeoutMs,
+  };
   for (const [name, value] of Object.entries(limits)) {
     const max = name === 'idleTimeoutMs' || name === 'frameTimeoutMs' ? MAX_TIMER_MS : Number.MAX_SAFE_INTEGER;
     if (!Number.isInteger(value) || value < 1 || value > max) throw new RangeError(`invalid ${name}: ${value}`);

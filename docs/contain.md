@@ -97,7 +97,7 @@ They build the image (tagged `kordn-test-*`, removed afterwards) and check:
 
   A planted-secret image proves it catches them.
 - **Build context:** a context full of junk (`.env`, `.git`, `node_modules`, `*.sqlite`, `dist`, `docs`, `test`, worktrees), laid out like the repo, passes only the allowlisted files under BuildKit even with the root `.dockerignore` present. Under the classic builder the root file keeps every planted secret out.
-- **Inside the hardened container**, against `serveGuardianSocket` and the fake guardian on the host:
+- **Inside the hardened container**, against `serveGuardianSocket` and a stand-in guardian on the host:
   - a guardian call through `/run/kordn.sock` works;
   - only `lo` exists and there are no routes;
   - connects to public IPv4/IPv6, the Docker gateway, 169.254.169.254 and the host's LAN addresses all fail with `ENETUNREACH`;
@@ -127,19 +127,73 @@ is not a registry digest, which a locally built image doesn't have.
 
 ## `kordn contain`: launch and verify
 
-`runContain(options)` in `src/sandbox.ts` is what the `kordn contain` command runs (the CLI
-wiring lives with the MCP server, #9). It:
+```sh
+kordn contain                                    # image kordn-sandbox, examples/policy.json
+kordn contain --image my-sandbox --policy ~/policy.json
+kordn contain --admin                            # admin UI for approvals while the agent runs
+kordn contain --require-contain                  # don't run the agent unless every check passes
+kordn contain -- /nodejs/bin/node /app/sandbox/other-agent.mjs
+```
+
+The command first removes sandbox containers left by a kordn that was killed
+(`reapStaleContainers`, see Signals below), then starts the guardian in-process with the policy
+and runs `runContain`. It prints the report to
+stderr. Then it exits with the agent's exit code; 1 if kordn refused to run it, couldn't set up
+the sandbox, the agent timed out (after 10 minutes), or its `docker exec` was killed by a signal
+(kordn says which); 130, 143 or 129 after `SIGINT`, `SIGTERM` or `SIGHUP`, even when one of
+those failures was already under way.
+
+**Agent output** is shown live, a line at a time, on kordn's stdout and stderr. The agent is
+untrusted and shares the terminal with kordn's report, so:
+
+- every line it prints starts with `agent | ` (stdout) or `agent! | ` (stderr), terminal or not.
+  A line without the prefix is kordn's own. An agent that prints `kordn contain: CONTAIN mode`
+  shows up as `agent | kordn contain: CONTAIN mode`;
+- ESC and every other control character except newline and tab are removed, so it can't move
+  the cursor or erase kordn's lines (`ESC[1A`, `ESC[2K`), set the clipboard or window title
+  (OSC 52, OSC 0), or overwrite a line with a bare `\r`. What's left of a sequence prints as
+  plain text;
+- a line split across reads is prefixed once, and a UTF-8 character split across reads stays
+  whole. A last line without a newline is ended when the agent exits;
+- stdout and stderr usually share one terminal (or one file with `2>&1`), so a line start is
+  shared too: when the agent writes to one stream while its line on the other is unfinished,
+  kordn ends that line first, and the unfinished line continues later on a new prefixed line.
+  Interleaving the two can't produce an unprefixed line;
+- lines are prefixed at their logical start. A very long agent line that your terminal soft-wraps
+  shows its continuation without the prefix. That's a known limit (an agent would have to guess
+  your terminal's width to line up a forgery), and kordn's own report is printed before the
+  agent starts;
+- after 16 MiB of agent output (counted before prefixes are added), the rest is dropped and kordn
+  prints one notice on stderr;
+- if kordn's stdout closes (for example `kordn contain | head -1`), kordn says so once on stderr
+  and drops the rest of the agent's stdout. The agent keeps running and cleanup is unaffected.
+
+With `--admin`, the admin UI starts on the host (never in the container) before the isolation
+checks, and its real port is passed to them as `adminPort`, so `hostServicesUnreachable` proves
+the sandbox can't reach it. While the checks run it says "Checking isolation" and claims nothing
+about containment. After the report it shows the mode the checks decided and stays up while the
+agent runs, so you can approve its transfers. If `--require-contain` refuses to run the agent,
+it switches to "Refused" and shuts down. Its URL and login token go to stderr and to
+`$XDG_RUNTIME_DIR/kordn/admin-<pid>.json`, as in the other modes.
+
+The command after `--` replaces the image's whole command, entrypoint included, so start it
+with `/nodejs/bin/node`.
+
+`runContain(options)` in `src/sandbox.ts` does the work. It:
 
 1. **Refuses on anything but Linux**, macOS included, with "Contain mode is not supported on <platform>". Use Guard mode there. It also refuses an image reference that isn't a plain name or ID (for example one starting with `-`).
 2. **Resolves the image to its ID** (`sha256:…`) and runs exactly that image, so a re-tag can't swap it in between.
 3. **Starts the guardian on the host.** It makes a private `0700` directory and calls `serveGuardianSocket(guardian, agentId, socket)`. The agent's identity is bound to that socket, never taken from the agent.
 4. **Launches the container idle** with the hardened flags above, labelled with the launcher's identity (see Signals below). PID 1 is `node -e 'setInterval(…)'`, so the agent hasn't started. The probe that runs next uses the image's own `node` (see [What the probe can and can't prove](#what-the-probe-can-and-cant-prove)). Every later call uses the container ID that `docker run` printed, not the name.
-5. **Runs the isolation checks** below, using `docker inspect`/`docker info` for configuration and a probe piped into `docker exec … node -` for runtime facts. A host-side canary listener on `127.0.0.1` stands in for the admin UI.
-6. **Prints the coverage report** through `onReport` (by default to stderr), then **runs the agent** with `docker exec` in that same container. The default agent is the image's command; `agentCommand` replaces it.
+5. **Runs the isolation checks** below, using `docker inspect`/`docker info` for configuration and a probe piped into `docker exec … node -` for runtime facts. A host-side canary listener on `127.0.0.1` counts any connection that gets out, and `adminPort`, if given, is probed too.
+6. **Prints the coverage report** through `onReport` (by default to stderr). If `onReport` returns a promise, it waits for it, and a rejection stops the run before the agent starts. `kordn contain` uses this to switch the admin UI to the mode the checks decided, or to shut it down on a refusal, before the agent starts. Then it **runs the agent** with `docker exec` in that same container. The default agent is the image's command; `agentCommand` replaces it. The agent's stdout and stderr are streamed to `agentOutput` (by default this process's stdout and stderr) as they arrive, prefixed and with control characters removed as described above (`AgentLines` in `src/agent-output.ts`), and are not kept in the result. Past `agentOutputLimitBytes` (16 MiB) of raw output in total, the rest is still read, so the agent never blocks on a full pipe, but dropped, with one notice on the stderr sink. The limit also bounds memory when a sink is slower than the agent. A sink that fails is given nothing more and doesn't stop the run or the cleanup; if it's the stdout sink, one notice on the stderr sink says so.
 7. **Cleans up** in all cases. It removes the container (with a warning if that fails), drops any open guardian connections so it can't hang, closes the socket and the canary, and deletes the directory. It refuses to start if the container name is already taken, so it never removes a container it didn't create.
 
-**Signals.** Cleanup runs in a `finally`, which a signal skips. The `kordn contain` CLI must
-install `SIGINT`/`SIGTERM` handlers that make `runContain` finish (and await it) before exiting.
+**Signals.** Cleanup runs in a `finally`, which a signal skips. Pass `signal` (an `AbortSignal`)
+to stop a run early: it kills whichever docker command is running, the agent included, cleans
+up as usual, and then rejects. `kordn contain` aborts it on `SIGINT`, `SIGTERM` or `SIGHUP` (the
+terminal closed or the parent died) and waits for the cleanup before exiting; a second signal
+exits at once. Every kordn mode that runs the admin UI removes its admin file on these signals.
 For a launcher that was killed outright (`SIGKILL`), `reapStaleContainers()` removes the
 containers it left behind. Each container is labelled with the launcher's pid, the host's boot id,
 the PID-namespace inode and the process start time. A container is removed only if the boot id
@@ -156,7 +210,7 @@ refuse to run it instead.
 
 ```ts
 const { report, agent } = await runContain({
-  guardian,                 // the Guardian (the fake for now, the real one after #6)
+  guardian,                 // the Guardian
   agentId: 'sandbox-demo-01',
   image: 'kordn-sandbox',
   adminPort: 3333,          // optional: the admin UI port that must be unreachable
@@ -235,8 +289,9 @@ mean the sandbox is unsafe.
 ### Tests
 
 ```sh
-npm test                                                     # pure checks, probe, runner (no Docker)
+npm test                                                     # pure checks, probe, runner, CLI with a fake docker
 KORDN_DOCKER_TESTS=1 npx vitest run test/contain-docker.test.ts
+KORDN_DOCKER_TESTS=1 npx vitest run test/cli-docker.test.ts  # kordn contain --admin, end to end
 ```
 
 The Docker test runs `runContain` end to end and checks that `reapStaleContainers` removes only

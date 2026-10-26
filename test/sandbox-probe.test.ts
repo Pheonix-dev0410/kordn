@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import policyJson from '../examples/policy.json' with { type: 'json' };
-import { createFakeGuardian } from '../src/fake-guardian.js';
+import { createFakeGuardian } from './fake-guardian.js';
 import { serveGuardianSocket } from '../src/guardian-socket.js';
 import { type ProbeParams, parseProbeOutput, probeScript } from '../src/sandbox-probe.js';
 import { Policy } from '../src/schema.js';

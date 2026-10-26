@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import policyJson from '../examples/policy.json' with { type: 'json' };
-import { createFakeGuardian } from '../src/fake-guardian.js';
+import { createFakeGuardian } from './fake-guardian.js';
 import { APPROVAL_TTL_SEC, AuditEvent, Policy, TOOL_OUTPUTS, type ToolName } from '../src/schema.js';
 
 const policy = Policy.parse(policyJson);

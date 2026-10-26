@@ -3,7 +3,7 @@ import { serveStdio } from '@modelcontextprotocol/server/stdio';
 import { afterEach, describe, expect, it } from 'vitest';
 import { z } from 'zod';
 import policyJson from '../examples/policy.json' with { type: 'json' };
-import { createFakeGuardian } from '../src/fake-guardian.js';
+import { createFakeGuardian } from './fake-guardian.js';
 import type { Guardian } from '../src/guardian-api.js';
 import { createMcpServer } from '../src/mcp-server.js';
 import { Policy, TOOL_NAMES } from '../src/schema.js';

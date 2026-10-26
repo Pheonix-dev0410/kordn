@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import policyJson from '../examples/policy.json' with { type: 'json' };
-import { createFakeGuardian } from '../src/fake-guardian.js';
+import { createFakeGuardian } from './fake-guardian.js';
 import { createGuardianClient } from '../src/guardian-client.js';
 import { serveGuardianSocket } from '../src/guardian-socket.js';
 import { MAX_FRAME_BYTES, Policy } from '../src/schema.js';

@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it } from 'vitest';
 import type { AdminServer } from '../src/admin/server.js';
-import { createFakeGuardian } from '../src/fake-guardian.js';
+import { createFakeGuardian } from './fake-guardian.js';
 import type { ActivityFilter, Guardian, PendingApproval } from '../src/guardian-api.js';
 import type { AuditEvent } from '../src/schema.js';
 import { agent, login, originOf, policy, send, start } from './admin-helpers.js';

@@ -4,7 +4,7 @@ import { homedir, networkInterfaces, tmpdir } from 'node:os';
 import { join, relative } from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import policyJson from '../examples/policy.json' with { type: 'json' };
-import { createFakeGuardian } from '../src/fake-guardian.js';
+import { createFakeGuardian } from './fake-guardian.js';
 import { serveGuardianSocket } from '../src/guardian-socket.js';
 import { scanImage } from './image-scan.js';
 import { daemonSocketPath, hardenedRunFlags, hostDockerSocketPaths, SANDBOX_SOCKET, socketFileMode } from '../src/sandbox.js';

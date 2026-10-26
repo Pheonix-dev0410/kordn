@@ -12,6 +12,7 @@ import {
   CSP,
   loginPage,
   type Mode,
+  MODES,
   type PageContext,
   policyPage,
   stopPage,
@@ -32,7 +33,7 @@ export interface AdminServerOptions {
   guardian: Guardian;
   /** The agent this UI administers. Stop revokes it. */
   agentId: string;
-  /** Decided by the caller from the sandbox checks; shown on every page. */
+  /** Decided by the caller from the sandbox checks; shown on every page. setMode changes it. */
   mode: Mode;
   /** Only 127.0.0.1 is accepted. */
   host?: string;
@@ -45,6 +46,8 @@ export interface AdminServer {
   url: string;
   /** Log-in token. Print it for the user; never log it anywhere else. */
   token: string;
+  /** Changes the mode shown from the next page on, e.g. from checking to the checks' result. */
+  setMode(mode: Mode): void;
   close(): Promise<void>;
 }
 
@@ -69,12 +72,13 @@ class HttpError extends Error {
 export async function startAdminServer(options: AdminServerOptions): Promise<AdminServer> {
   const host = options.host ?? LOOPBACK;
   if (host !== LOOPBACK) throw new Error(`admin UI binds only to ${LOOPBACK}, refusing ${JSON.stringify(host)}`);
-  if (options.mode !== 'guard' && options.mode !== 'contain') throw new Error('admin UI mode must be guard or contain');
+  assertMode(options.mode);
   if (!AgentId.safeParse(options.agentId).success) throw new Error('admin UI needs a valid agent id');
   // Browsers omit ":80" from Host and Origin, which would fail the exact-match checks.
   if (options.port === 80) throw new Error('admin UI cannot use port 80; pick another port or 0');
 
-  const { guardian, agentId, mode } = options;
+  const { guardian, agentId } = options;
+  let mode = options.mode;
   const now = options.nowMs ?? (() => Date.now());
   const token = secret();
   const sessions = new Sessions(now);
@@ -296,12 +300,20 @@ export async function startAdminServer(options: AdminServerOptions): Promise<Adm
   return {
     url: `${origin}/`,
     token,
+    setMode: (next) => {
+      assertMode(next);
+      mode = next;
+    },
     close: () =>
       new Promise<void>((resolve) => {
         server.close(() => resolve());
         server.closeAllConnections();
       }),
   };
+}
+
+function assertMode(mode: Mode): void {
+  if (!(MODES as readonly string[]).includes(mode)) throw new Error(`admin UI mode must be one of ${MODES.join(', ')}`);
 }
 
 function setSecurityHeaders(res: ServerResponse): void {
