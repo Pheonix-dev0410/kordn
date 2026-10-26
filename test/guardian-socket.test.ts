@@ -270,6 +270,8 @@ describe('guardian socket options', () => {
     ['idleTimeoutMs', -1],
     // Node turns a timer this long into 1 ms.
     ['idleTimeoutMs', 2 ** 31],
+    ['frameTimeoutMs', 0],
+    ['frameTimeoutMs', 2 ** 31],
   ])('rejects %s: %s', (name, value) => {
     expect(() => serveGuardianSocket(createFakeGuardian({ policy }), policy.agentId, '/nonexistent/g.sock', { [name]: value })).toThrow(
       RangeError,

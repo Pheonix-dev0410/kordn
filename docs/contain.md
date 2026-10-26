@@ -90,7 +90,7 @@ KORDN_DOCKER_TESTS=1 npx vitest run test/sandbox-image.test.ts
 They build the image (tagged `kordn-test-*`, removed afterwards) and check:
 
 - **Contents:** `/app` holds only `dist`, `node_modules` (only `zod`), `package.json` and `sandbox/agent.mjs`. There is no shell or npm, and the user is `65532`.
-- **No secrets:** `scanImage` (`src/image-scan.ts`) reads every layer of `docker save`, so a file deleted in a later layer is still found, along with the image env, labels and `docker history`. It flags:
+- **No secrets:** `scanImage` (`test/image-scan.ts`) reads every layer of `docker save`, so a file deleted in a later layer is still found, along with the image env, labels and `docker history`. It flags:
   - env, credential, key, VCS and database files by name;
   - private keys and common API token formats by content;
   - secret-named `NAME=value` entries in env, labels and history.

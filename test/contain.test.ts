@@ -97,7 +97,8 @@ describe('runContain with a fake docker CLI', () => {
   });
 });
 
-describe('runContain lifecycle (fake docker CLI)', () => {
+// These read /proc (boot id, namespaces), so they only run on Linux.
+describe.runIf(process.platform === 'linux')('runContain lifecycle (fake docker CLI)', () => {
   const fakeDocker = join(import.meta.dirname, 'fixtures/fake-docker.mjs');
   const containerId = 'c'.repeat(64);
 
@@ -195,7 +196,7 @@ describe('staleContainers', () => {
   });
 });
 
-describe('launcherIdentity', () => {
+describe.runIf(process.platform === 'linux')('launcherIdentity', () => {
   it('reads the boot id, PID namespace inode and start time from /proc', () => {
     const id = launcherIdentity();
     expect(id.pid).toBe(process.pid);

@@ -3,7 +3,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { gzipSync, zstdCompressSync } from 'node:zlib';
 import { afterEach, describe, expect, it } from 'vitest';
-import { checkConfig, checkPath, checkText, createTextScanner, isSecretName, parseHistory, scanImageArchive } from '../src/image-scan.js';
+import { checkConfig, checkPath, checkText, createTextScanner, isSecretName, parseHistory, scanImageArchive } from './image-scan.js';
 
 const dirs: string[] = [];
 afterEach(() => {
