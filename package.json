@@ -5,19 +5,29 @@
   "description": "A firewall for AI agents: enforces spending and access limits on MCP tool calls, outside the model.",
   "license": "Apache-2.0",
   "type": "module",
+  "bin": {
+    "kordn": "dist/index.js"
+  },
+  "files": [
+    "dist",
+    "examples"
+  ],
   "engines": {
     "node": ">=24"
   },
   "scripts": {
-    "build": "tsc",
+    "build": "tsc && node -e \"require('node:fs').chmodSync('dist/index.js', 0o755)\"",
     "typecheck": "tsc --noEmit",
     "test": "npm run build && vitest run",
-    "test:concurrency": "npm run build && KORDN_STRESS_RUNS=50 vitest run test/concurrency.test.ts"
+    "test:concurrency": "npm run build && KORDN_STRESS_RUNS=50 vitest run test/concurrency.test.ts",
+    "prepack": "npm run build"
   },
   "dependencies": {
+    "@modelcontextprotocol/server": "2.3.1",
     "zod": "4.6.7"
   },
   "devDependencies": {
+    "@modelcontextprotocol/client": "2.3.1",
     "@types/node": "24.19.2",
     "typescript": "6.0.3",
     "vitest": "5.0.5"

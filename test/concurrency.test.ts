@@ -5,7 +5,7 @@ import { fileURLToPath } from 'node:url';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import fixture from '../examples/policy.json' with { type: 'json' };
 import { BUDGET_STATES, Policy } from '../src/schema.js';
-import { callGuardian } from '../src/guardian-client.js';
+import { callGuardian } from './socket-call.js';
 import { harness, propose } from './helpers.js';
 
 const runs = Number(process.env.KORDN_STRESS_RUNS ?? 1);

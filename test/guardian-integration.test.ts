@@ -5,7 +5,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { startAdminServer } from '../src/admin/server.js';
 import type { AdminServer } from '../src/admin/server.js';
 import { policyFormValues } from '../src/admin/forms.js';
-import { callGuardian } from '../src/guardian-client.js';
+import { callGuardian } from './socket-call.js';
 import { serveGuardianSocket } from '../src/guardian-socket.js';
 import type { Guardian as GuardianApi } from '../src/guardian-api.js';
 import { requestHash } from '../src/hash.js';

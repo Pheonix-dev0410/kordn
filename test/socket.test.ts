@@ -4,7 +4,7 @@ import { once } from 'node:events';
 import { chmodSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { callGuardian } from '../src/guardian-client.js';
+import { callGuardian } from './socket-call.js';
 import { serveGuardianSocket } from '../src/guardian-socket.js';
 import { MAX_FRAME_BYTES } from '../src/schema.js';
 import { harness } from './helpers.js';

@@ -44,7 +44,13 @@ claude mcp add kordn -- node /absolute/path/to/kordn/dist/index.js
 KORDN_TOKEN=<random-secret> node dist/index.js --http --port 3333
 ```
 
-This serves MCP at `http://127.0.0.1:3333/mcp`. Clients running in the cloud need a public HTTPS URL, so put it behind a tunnel and configure the client with the token.
+This serves MCP at `http://127.0.0.1:3333/mcp`. Every request needs the header `Authorization: Bearer <random-secret>`. Use a secret of at least 32 characters, e.g. from `openssl rand -hex 32`.
+
+Clients running in the cloud need a public HTTPS URL, so put it behind a tunnel and configure the client with the token. kordn only answers requests addressed to localhost, so tell it the tunnel's hostname:
+
+```sh
+KORDN_TOKEN=<random-secret> node dist/index.js --http --port 3333 --allowed-host <your-tunnel-hostname>
+```
 
 ## Set your limits
 
@@ -60,7 +66,7 @@ Edit `examples/policy.json`:
 }
 ```
 
-Anything not explicitly allowed is denied.
+Anything not explicitly allowed is denied. To keep your policy somewhere else, start kordn with `--policy /path/to/policy.json`.
 
 ## Tools the agent gets
 
