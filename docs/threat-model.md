@@ -41,6 +41,8 @@ Out of scope: root on the host, kernel escapes, a modified kordn binary.
 | Read the policy database from the sandbox | Not mounted |
 | Admin change with a foreign `Origin` or no CSRF token | 403 |
 | Page on a rebinding domain calling the admin UI (bad `Host`) | Rejected |
+| Memo with HTML (`<img src=x onerror=alert(1)>`) shown in the admin UI | Rendered as text |
+| Flood of approve or reject submissions | Rate limited (429) |
 
 ## Known limits
 
