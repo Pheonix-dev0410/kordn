@@ -115,7 +115,8 @@ describe('HTTP transport', () => {
   ])('cuts off an unauthenticated upload after its %s', async (_name, headers, code) => {
     const { url } = await start();
     const { status, written } = await upload(url, headers, 256 * 1024 * 1024);
-    expect(status).toBe(code);
+    // macOS can reset the connection before the client reads the reply.
+    expect(process.platform === 'linux' ? [code] : [code, 0]).toContain(status);
     // Kernel buffers absorb some data after the server stops reading; 256 MiB would mean it never did.
     expect(written).toBeLessThan(32 * 1024 * 1024);
   });
