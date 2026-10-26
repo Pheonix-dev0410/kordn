@@ -64,9 +64,13 @@ describe('metadata', () => {
       token_endpoint: `${PUBLIC}/token`,
       registration_endpoint: `${PUBLIC}/register`,
       revocation_endpoint: `${PUBLIC}/revoke`,
+      response_types_supported: ['code'],
       code_challenge_methods_supported: ['S256'],
       grant_types_supported: ['authorization_code', 'refresh_token'],
       token_endpoint_auth_methods_supported: ['none', 'client_secret_post', 'client_secret_basic'],
+      revocation_endpoint_auth_methods_supported: ['none', 'client_secret_post', 'client_secret_basic'],
+      // RFC 9207: the authorization response carries `iss`, so clients can check it.
+      authorization_response_iss_parameter_supported: true,
     });
   });
   it('works for a localhost http origin', async () => {
@@ -121,6 +125,17 @@ describe('/register', () => {
     expect(body.client_secret).toBeTruthy();
     expect(body.client_id_issued_at).toBeTruthy();
     expect(audit).not.toHaveBeenCalled();
+  });
+  it('drops grant types it does not support and echoes the ones it kept', async () => {
+    const { register } = setup();
+    const { res, body } = await register({
+      redirect_uris: [REDIRECT],
+      grant_types: ['authorization_code', 'refresh_token', 'urn:ietf:params:oauth:grant-type:device_code'],
+      response_types: ['code'],
+    });
+    expect(res.status).toBe(201);
+    expect(body).toMatchObject({ grant_types: ['authorization_code', 'refresh_token'], response_types: ['code'] });
+    expect((await register({ redirect_uris: [REDIRECT], grant_types: ['authorization_code'] })).body.grant_types).toEqual(['authorization_code']);
   });
   it('omits the secret for public clients', async () => {
     const { register } = setup();

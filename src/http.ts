@@ -68,7 +68,12 @@ export async function serveHttp(options: HttpOptions): Promise<HttpHandle> {
   const handler = createMcpHandler(options.factory);
 
   const server = createServer((req, res) => {
-    handle(req, res).catch(() => {
+    handle(req, res).catch((error: unknown) => {
+      // A client hanging up mid-body isn't our error. Otherwise the path only: queries, headers and bodies can hold codes and tokens.
+      if (req.complete || !req.socket.destroyed) {
+        const message = (error instanceof Error ? error.message : String(error)).replace(/[\r\n]+/g, ' ');
+        process.stderr.write(`kordn: internal error in ${pathOf(req)} handling: ${message}\n`);
+      }
       if (!res.headersSent) reply(res, 500, 'internal error');
       else res.destroy();
     });
@@ -151,6 +156,14 @@ async function oauthChallenge(header: string | undefined, oauth: OAuthServer): P
     return undefined;
   } catch (error) {
     return bearerAuthChallengeResponse(error, { resourceMetadataUrl });
+  }
+}
+
+function pathOf(req: IncomingMessage): string {
+  try {
+    return new URL(req.url ?? '/', 'http://localhost').pathname;
+  } catch {
+    return '/';
   }
 }
 

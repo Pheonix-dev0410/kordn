@@ -1,6 +1,6 @@
 import { type ChildProcess, execFileSync, spawn } from 'node:child_process';
 import { chmodSync, closeSync, existsSync, mkdirSync, mkdtempSync, openSync, readdirSync, readFileSync, statSync, symlinkSync, writeFileSync } from 'node:fs';
-import type { Server } from 'node:net';
+import { createServer, type Server } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client';
@@ -654,6 +654,37 @@ describe('--public-url', () => {
     const kordn = spawnCli(['--http', '--port', '0', '--public-url', 'https://x.example/', '--data', data], { KORDN_TOKEN: 'y'.repeat(32) });
     await kordn.waitForStderr(/kordn: OAuth on for https:\/\/x\.example\/mcp\n/);
     expect(statSync(join(data, 'oauth.sqlite')).mode & 0o777).toBe(0o600);
+    kordn.child.kill('SIGTERM');
+    expect((await kordn.exited).code).toBe(0);
+  });
+
+  it.each([
+    ['names another port', ['--port', '0', '--public-url', 'http://localhost:9'], true],
+    ['names the default port of its scheme', ['--port', '0', '--public-url', 'http://127.0.0.1'], true],
+    ['is not loopback', ['--port', '0', '--public-url', 'https://x.example'], false],
+  ])('warns about a loopback --public-url only when it %s', async (_case, args, warns) => {
+    const data = tempDir();
+    chmodSync(data, 0o700);
+    const kordn = spawnCli(['--http', ...args, '--data', data], { KORDN_TOKEN: 'y'.repeat(32) });
+    await kordn.waitForStderr(/kordn: OAuth on for/);
+    const port = new URL(args[3] as string).port || '80';
+    const warning = `kordn: warning: --public-url port ${port} differs from --port 0; OAuth redirects will point at the wrong port\n`;
+    if (warns) expect(kordn.stderr()).toContain(warning);
+    else expect(kordn.stderr()).not.toContain('warning');
+    kordn.child.kill('SIGTERM');
+    expect((await kordn.exited).code).toBe(0);
+  });
+
+  it('does not warn when a loopback --public-url names --port', async () => {
+    const probe = createServer();
+    await new Promise<void>((resolve) => probe.listen(0, '127.0.0.1', resolve));
+    const { port } = probe.address() as { port: number };
+    await new Promise<void>((resolve) => probe.close(() => resolve()));
+    const data = tempDir();
+    chmodSync(data, 0o700);
+    const kordn = spawnCli(['--http', '--port', String(port), '--public-url', `http://localhost:${port}`, '--data', data], { KORDN_TOKEN: 'y'.repeat(32) });
+    await kordn.waitForStderr(/kordn: OAuth on for/);
+    expect(kordn.stderr()).not.toContain('warning');
     kordn.child.kill('SIGTERM');
     expect((await kordn.exited).code).toBe(0);
   });

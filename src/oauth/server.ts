@@ -131,6 +131,7 @@ export function createOAuthServer(options: OAuthServerOptions): OAuthServer {
     code_challenge_methods_supported: ['S256'],
     token_endpoint_auth_methods_supported: AUTH_METHODS,
     revocation_endpoint_auth_methods_supported: AUTH_METHODS,
+    authorization_response_iss_parameter_supported: true,
   };
   const metadataOptions = {
     oauthMetadata,
@@ -202,8 +203,8 @@ export function createOAuthServer(options: OAuthServerOptions): OAuthServer {
       ...(secret !== null && { client_secret: secret, client_secret_expires_at: 0 }),
       client_name: client.name,
       redirect_uris: client.redirectUris,
-      grant_types: ['authorization_code', 'refresh_token'],
-      response_types: ['code'],
+      grant_types: parsed.grantTypes,
+      response_types: parsed.responseTypes,
       token_endpoint_auth_method: client.authMethod,
     });
   }

@@ -112,7 +112,8 @@ export class OAuthStore {
     private readonly db: DatabaseSync,
     private readonly now: () => number = Date.now,
   ) {
-    this.db.exec(`PRAGMA journal_mode=WAL; PRAGMA busy_timeout=5000; PRAGMA foreign_keys=ON;
+    // busy_timeout first: switching to WAL takes a lock and would fail at once if another connection held it.
+    this.db.exec(`PRAGMA busy_timeout=5000; PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON;
       CREATE TABLE IF NOT EXISTS oauth_clients (
         id TEXT PRIMARY KEY,
         name TEXT NOT NULL,

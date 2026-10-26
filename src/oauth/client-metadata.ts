@@ -2,6 +2,8 @@ export type AuthMethod = 'none' | 'client_secret_post' | 'client_secret_basic';
 export interface ClientRegistration { name: string; redirectUris: string[]; authMethod: AuthMethod }
 
 const AUTH_METHODS: readonly string[] = ['none', 'client_secret_post', 'client_secret_basic'];
+const GRANT_TYPES: readonly string[] = ['authorization_code', 'refresh_token'];
+const RESPONSE_TYPES: readonly string[] = ['code'];
 const MAX_REDIRECT_URIS = 5;
 const MAX_REDIRECT_URI_LENGTH = 2048;
 const MAX_NAME_CODE_POINTS = 100;
@@ -27,14 +29,21 @@ export function isAllowedRedirectUri(uri: string): boolean {
 }
 
 type Parsed =
-  | { ok: true; value: ClientRegistration }
+  | { ok: true; value: ClientRegistration; grantTypes: string[]; responseTypes: string[] }
   | { ok: false; error: 'invalid_redirect_uri' | 'invalid_client_metadata'; description: string };
 
 const badUri: Parsed = { ok: false, error: 'invalid_redirect_uri', description: 'redirect_uris must be 1 to 5 https or loopback http URIs without fragments' };
 const badMeta: Parsed = { ok: false, error: 'invalid_client_metadata', description: 'unsupported client metadata' };
 
-function subsetOf(value: unknown, allowed: readonly string[]): boolean {
-  return Array.isArray(value) && value.every((v) => typeof v === 'string' && allowed.includes(v));
+/**
+ * The supported values the client asked for, in our order; all of them when it asked for none. Unknown values are
+ * dropped rather than refused (VS Code asks for the device flow too). Null when `required` isn't among them.
+ */
+function supported(value: unknown, ours: readonly string[], required: string): string[] | null {
+  if (value === undefined) return [...ours];
+  if (!Array.isArray(value)) return null;
+  const kept = ours.filter((v) => value.includes(v));
+  return kept.includes(required) ? kept : null;
 }
 
 /** RFC 7591 body → registration, or an RFC 7591 error code with a fixed description. */
@@ -46,10 +55,11 @@ export function parseClientMetadata(body: unknown): Parsed {
   for (const u of uris) {
     if (typeof u !== 'string' || u.length > MAX_REDIRECT_URI_LENGTH || !isAllowedRedirectUri(u)) return badUri;
   }
-  if (m.grant_types !== undefined && !subsetOf(m.grant_types, ['authorization_code', 'refresh_token'])) return badMeta;
-  if (m.response_types !== undefined && !subsetOf(m.response_types, ['code'])) return badMeta;
+  const grantTypes = supported(m.grant_types, GRANT_TYPES, 'authorization_code');
+  const responseTypes = supported(m.response_types, RESPONSE_TYPES, 'code');
+  if (!grantTypes || !responseTypes) return badMeta;
   const method = m.token_endpoint_auth_method ?? 'none';
   if (typeof method !== 'string' || !AUTH_METHODS.includes(method)) return badMeta;
   const name = typeof m.client_name === 'string' ? m.client_name : '';
-  return { ok: true, value: { name: cleanName(name), redirectUris: [...(uris as string[])], authMethod: method as AuthMethod } };
+  return { ok: true, value: { name: cleanName(name), redirectUris: [...(uris as string[])], authMethod: method as AuthMethod }, grantTypes, responseTypes };
 }

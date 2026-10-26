@@ -1,9 +1,10 @@
 import { request } from 'node:http';
 import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import policyJson from '../examples/policy.json' with { type: 'json' };
 import { createFakeGuardian } from './fake-guardian.js';
 import { serveHttp } from '../src/http.js';
+import type { OAuthServer } from '../src/oauth/server.js';
 import { createMcpServer } from '../src/mcp-server.js';
 import { Policy } from '../src/schema.js';
 
@@ -15,7 +16,7 @@ afterEach(async () => {
   while (closers.length) await closers.pop()?.();
 });
 
-async function start(options: { allowedHosts?: string[] } = {}) {
+async function start(options: { allowedHosts?: string[]; oauth?: OAuthServer } = {}) {
   const guardian = createFakeGuardian({ policy });
   const handleCall = guardian.handleCall.bind(guardian);
   const http = await serveHttp({
@@ -201,5 +202,28 @@ describe('HTTP transport', () => {
       expect(malformed.structuredContent).toEqual({ error: { code: 'UNKNOWN_ACTION' } });
     }
     expect(await guardian.listActivity({ events: ['policy.denied'] })).toHaveLength(3);
+  });
+});
+
+describe('HTTP internal errors', () => {
+  it('answers 500 and logs the path, never the query', async () => {
+    const write = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
+    closers.push(async () => write.mockRestore());
+    const oauth = {
+      publicUrl: new URL('http://localhost'),
+      resource: new URL('http://localhost/mcp'),
+      resourceMetadataUrl: 'http://localhost/.well-known/oauth-protected-resource/mcp',
+      verifier: { verifyAccessToken: async () => { throw new Error('unused'); } },
+      fetch: async () => { throw new Error('boom'); },
+    } satisfies OAuthServer;
+    const { url } = await start({ oauth });
+    const res = await fetch(url.replace('/mcp', '/token?code=secret-code-value'), {
+      method: 'POST',
+      headers: { 'content-type': 'application/x-www-form-urlencoded' },
+      body: 'refresh_token=secret-body-value',
+    });
+    expect(res.status).toBe(500);
+    const logged = write.mock.calls.map(([chunk]) => String(chunk)).join('');
+    expect(logged).toBe('kordn: internal error in /token handling: boom\n');
   });
 });

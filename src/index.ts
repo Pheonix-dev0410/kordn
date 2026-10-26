@@ -321,6 +321,15 @@ function onStopSignal(stop: (signal: NodeJS.Signals) => void): void {
   }
 }
 
+/** A tunnel may map any port, but a loopback public URL is reached directly, so its port has to be kordn's. */
+function warnOnPortMismatch(publicUrl: URL, port: number): void {
+  if (publicUrl.hostname !== 'localhost' && publicUrl.hostname !== '127.0.0.1') return;
+  const publicPort = Number(publicUrl.port || (publicUrl.protocol === 'https:' ? 443 : 80));
+  if (publicPort !== port) {
+    process.stderr.write(`kordn: warning: --public-url port ${publicPort} differs from --port ${port}; OAuth redirects will point at the wrong port\n`);
+  }
+}
+
 async function serve(options: Options, env: NodeJS.ProcessEnv): Promise<void> {
   let agentId: string;
   let handleCall: Guardian['handleCall'];
@@ -386,7 +395,10 @@ async function serve(options: Options, env: NodeJS.ProcessEnv): Promise<void> {
     const server = http;
     closers.push(() => server.close());
     process.stderr.write(`kordn: serving MCP at ${http.url}\n`);
-    if (options.publicUrl) process.stderr.write(`kordn: OAuth on for ${options.publicUrl.origin}/mcp\n`);
+    if (options.publicUrl) {
+      warnOnPortMismatch(options.publicUrl, options.port);
+      process.stderr.write(`kordn: OAuth on for ${options.publicUrl.origin}/mcp\n`);
+    }
     return;
   }
 

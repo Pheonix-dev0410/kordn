@@ -28,17 +28,38 @@ describe('parseClientMetadata', () => {
     expect(parseClientMetadata({ redirect_uris: [`https://a.example/${'x'.repeat(2048)}`] })).toMatchObject({ ok: false, error: 'invalid_redirect_uri' });
   });
 
-  it('rejects unsupported grant types, response types and auth methods', () => {
-    for (const extra of [{ grant_types: ['client_credentials'] }, { response_types: ['token'] }, { token_endpoint_auth_method: 'private_key_jwt' }]) {
-      expect(parseClientMetadata({ redirect_uris: [uri], ...extra })).toMatchObject({ ok: false, error: 'invalid_client_metadata' });
+  it('rejects grant and response types without the code flow, and auth methods it lacks', () => {
+    for (const extra of [
+      { grant_types: ['client_credentials'] },
+      { grant_types: ['refresh_token'] },
+      { grant_types: [] },
+      { grant_types: 'authorization_code' },
+      { response_types: ['token'] },
+      { response_types: 'code' },
+      { token_endpoint_auth_method: 'private_key_jwt' },
+    ]) {
+      expect(parseClientMetadata({ redirect_uris: [uri], ...extra }), JSON.stringify(extra)).toMatchObject({ ok: false, error: 'invalid_client_metadata' });
     }
   });
 
+  it('drops grant and response types it does not support, keeping the supported ones', () => {
+    // VS Code asks for the device flow too.
+    const result = parseClientMetadata({
+      redirect_uris: [uri],
+      grant_types: ['authorization_code', 'refresh_token', 'urn:ietf:params:oauth:grant-type:device_code', 7],
+      response_types: ['code', 'token'],
+    });
+    expect(result).toMatchObject({ ok: true, grantTypes: ['authorization_code', 'refresh_token'], responseTypes: ['code'] });
+  });
+
   it('defaults to a public client and ignores unknown fields', () => {
-    expect(parseClientMetadata({ redirect_uris: [uri], grant_types: ['authorization_code'], logo_uri: 'x' })).toEqual({
+    expect(parseClientMetadata({ redirect_uris: [uri], logo_uri: 'x' })).toEqual({
       ok: true,
       value: { name: 'Unnamed app', redirectUris: [uri], authMethod: 'none' },
+      grantTypes: ['authorization_code', 'refresh_token'],
+      responseTypes: ['code'],
     });
+    expect(parseClientMetadata({ redirect_uris: [uri], grant_types: ['authorization_code'] })).toMatchObject({ grantTypes: ['authorization_code'] });
   });
 
   it('cleans the client name', () => {
