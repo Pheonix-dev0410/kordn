@@ -1,6 +1,7 @@
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import type { ApprovalError, ApprovalResult, Guardian } from '../guardian-api.js';
+import type { ConnectedApp, StoredClient } from '../oauth/store.js';
 import { AgentId } from '../schema.js';
 import { Form, POLICY_FIELDS, parseCount, type PolicyFormValues, policyFormValues, readPolicyForm } from './forms.js';
 import type { Html } from './html.js';
@@ -8,6 +9,7 @@ import {
   ACTIVITY_FILTERS,
   type ActivityType,
   activityPage,
+  appsPage,
   approvalsPage,
   CSP,
   loginPage,
@@ -29,6 +31,12 @@ const ACTIVITY_LIMIT = 200;
 const MAX_BODY_BYTES = 16 * 1024;
 const COOKIE = 'kordn_admin';
 
+/** What the Apps page needs from the OAuth store. */
+export interface ConnectedApps {
+  list(): ConnectedApp[];
+  revoke(clientId: string): StoredClient | null;
+}
+
 export interface AdminServerOptions {
   guardian: Guardian;
   /** The agent this UI administers. Stop revokes it. */
@@ -39,6 +47,8 @@ export interface AdminServerOptions {
   host?: string;
   /** 0 (the default) picks a free port. */
   port?: number;
+  /** Set when OAuth is on: adds the Apps page. */
+  apps?: ConnectedApps;
   nowMs?: () => number;
 }
 
@@ -77,7 +87,7 @@ export async function startAdminServer(options: AdminServerOptions): Promise<Adm
   // Browsers omit ":80" from Host and Origin, which would fail the exact-match checks.
   if (options.port === 80) throw new Error('admin UI cannot use port 80; pick another port or 0');
 
-  const { guardian, agentId } = options;
+  const { guardian, agentId, apps } = options;
   let mode = options.mode;
   const now = options.nowMs ?? (() => Date.now());
   const token = secret();
@@ -96,7 +106,7 @@ export async function startAdminServer(options: AdminServerOptions): Promise<Adm
     const session = r.session!;
     const flash = session.flash;
     session.flash = null;
-    return { mode, agentId, csrf: session.csrf, flash, errors, revoked };
+    return { mode, agentId, csrf: session.csrf, flash, errors, revoked, apps: apps !== undefined };
   }
 
   async function showPolicy(r: Request, status: number, errors?: string[], values?: PolicyFormValues): Promise<void> {
@@ -114,6 +124,23 @@ export async function startAdminServer(options: AdminServerOptions): Promise<Adm
   async function showApprovals(r: Request, status: number, errors?: string[]): Promise<void> {
     const pending = await guardian.listPending();
     sendHtml(r.res, status, approvalsPage(await userContext(r, errors), pending));
+  }
+
+  async function showApps(r: Request, status: number, list: ConnectedApps, errors?: string[]): Promise<void> {
+    sendHtml(r.res, status, appsPage(await userContext(r, errors), list.list()));
+  }
+
+  async function revokeApp(r: Request, list: ConnectedApps): Promise<void> {
+    const clientId = hiddenField(r.form, 'client');
+    if (clientId === null) return showApps(r, 400, list, ['This form is incomplete. Reload the page.']);
+    const revoked = list.revoke(clientId);
+    if (!revoked) return showApps(r, 409, list, ['That app is already gone.']);
+    await guardian.recordOAuthEvent('oauth.revoked', {
+      client: revoked.name,
+      redirectHost: new URL(revoked.redirectUris[0]!).host,
+    });
+    r.session!.flash = `Revoked ${revoked.name}. It has to be approved again to reconnect.`;
+    redirect(r.res, '/apps');
   }
 
   async function decide(r: Request, kind: 'approve' | 'reject'): Promise<void> {
@@ -181,6 +208,11 @@ export async function startAdminServer(options: AdminServerOptions): Promise<Adm
     '/approvals/reject': {
       POST: (r) => decide(r, 'reject'),
     },
+    // Only present with OAuth on; without it /apps takes the normal 404 path.
+    ...(apps && {
+      '/apps': { GET: (r: Request) => showApps(r, 200, apps) },
+      '/apps/revoke': { POST: (r: Request) => revokeApp(r, apps) },
+    }),
     '/activity': {
       GET: async (r) => {
         const types = r.url.searchParams.getAll('type');

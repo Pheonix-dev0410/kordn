@@ -7,7 +7,7 @@ import { serveStdio } from '@modelcontextprotocol/server/stdio';
 import { z } from 'zod';
 import { writeAdminFile } from './admin/runtime-file.js';
 import type { Mode } from './admin/pages.js';
-import { startAdminServer } from './admin/server.js';
+import { type ConnectedApps, startAdminServer } from './admin/server.js';
 import type { Guardian } from './guardian-api.js';
 import { createGuardianClient } from './guardian-client.js';
 import { MIN_TOKEN_LENGTH, serveHttp } from './http.js';
@@ -270,8 +270,8 @@ const MODE_LABEL: Record<Mode, string> = {
  * and in the admin file for when an AI client spawned kordn and hides stderr. The file also
  * goes on any exit, even a forced one.
  */
-async function startAdmin(guardian: Guardian, agentId: string, mode: Mode, port: number): Promise<RunningAdmin> {
-  const admin = await startAdminServer({ guardian, agentId, mode, port });
+async function startAdmin(guardian: Guardian, agentId: string, mode: Mode, port: number, apps?: ConnectedApps): Promise<RunningAdmin> {
+  const admin = await startAdminServer({ guardian, agentId, mode, port, apps });
   let file;
   try {
     file = writeAdminFile({ url: admin.url, token: admin.token, pid: process.pid, agentId });
@@ -357,7 +357,11 @@ async function serve(options: Options, env: NodeJS.ProcessEnv): Promise<void> {
     closers.push(async () => store.close());
   }
   // Outside a sandbox there is nothing to check, so the admin UI says Guard.
-  const admin = options.admin && guardian ? await startAdmin(guardian, agentId, 'guard', options.adminPort) : undefined;
+  const admin = options.admin && guardian ? await startAdmin(guardian, agentId, 'guard', options.adminPort, oauthStore && {
+        list: () => oauthStore.listApps(),
+        revoke: (clientId) => oauthStore.revokeClient(clientId),
+      })
+    : undefined;
   const closeAdmin = admin?.close;
   if (closeAdmin) closers.push(closeAdmin);
 
