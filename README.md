@@ -4,11 +4,11 @@ A firewall for AI agents. kordn is an MCP server that sits between an agent and 
 
 v0.1 protects a mock bank with fake money only. Don't connect it to real accounts.
 
-> Status: in development. The schemas and test data are in place. The MCP server, guardian and sandbox are being built ([roadmap](../../issues/19)).
+> Status: in development. The backend policy, ledger, audit log, mock adapter, guardian, and admin UI are implemented. The MCP server and sandbox are still being built ([roadmap](../../issues/19)). See the [backend contract](docs/backend.md) for integration and recovery details.
 
 ## Setup
 
-Requires Node.js 24+.
+Requires Node.js 24+. Use the latest patch release.
 
 ```sh
 git clone https://github.com/Pheonix-dev0410/kordn.git
@@ -90,6 +90,7 @@ docs/        threat model and the full design doc
 ```sh
 npm run typecheck
 npm test
+npm run test:concurrency # 50 rounds of concurrency and process-crash tests
 ```
 
 Make a branch for each issue, open a pull request into `main`, and link the issue.
