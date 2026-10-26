@@ -321,8 +321,22 @@ describe('/authorize', () => {
       return fields(await res.text());
     }
     const submit = (body: Record<string, string>, origin = PUBLIC) => s.post('/authorize', body, { origin });
-    return { ...s, verifier, challenge, query, params, open, submit };
+    /** Registers a client and approves it once, as the owner would have. */
+    async function approvedClient(): Promise<string> {
+      const id = (await s.register()).body.client_id as string;
+      expect(s.store.approve({ clientId: id, redirectUri: REDIRECT, codeChallenge: challenge, resource: `${PUBLIC}/mcp`, state: null }).ok).toBe(true);
+      return id;
+    }
+    return { ...s, verifier, challenge, query, params, open, submit, approvedClient };
   }
+  const requestErrors: [Record<string, string>, string][] = [
+    [{ response_type: 'token' }, 'unsupported_response_type'],
+    [{ code_challenge: '' }, 'invalid_request'],
+    [{ code_challenge: 'short' }, 'invalid_request'],
+    [{ code_challenge_method: 'plain' }, 'invalid_request'],
+    [{ code_challenge_method: '' }, 'invalid_request'],
+    [{ resource: 'https://other.example/mcp' }, 'invalid_target'],
+  ];
   function fields(page: string) {
     const request = page.match(/name="request" value="([^"]+)"/)?.[1];
     const csrf = page.match(/name="csrf" value="([^"]+)"/)?.[1];
@@ -344,18 +358,10 @@ describe('/authorize', () => {
       expect(res.headers.get('content-security-policy')).toContain("frame-ancestors 'none'");
     }
   });
-  it('redirects other request errors with state and iss', async () => {
-    const { call, query, params, register } = flow();
-    const id = (await register()).body.client_id as string;
-    const cases: [Record<string, string>, string][] = [
-      [{ response_type: 'token' }, 'unsupported_response_type'],
-      [{ code_challenge: '' }, 'invalid_request'],
-      [{ code_challenge: 'short' }, 'invalid_request'],
-      [{ code_challenge_method: 'plain' }, 'invalid_request'],
-      [{ code_challenge_method: '' }, 'invalid_request'],
-      [{ resource: 'https://other.example/mcp' }, 'invalid_target'],
-    ];
-    for (const [extra, error] of cases) {
+  it('redirects other request errors with state and iss once the client is approved', async () => {
+    const { call, query, params, approvedClient } = flow();
+    const id = await approvedClient();
+    for (const [extra, error] of requestErrors) {
       const res = await call(query(params(id, REDIRECT, extra)));
       expect(res.status, error).toBe(303);
       const to = location(res);
@@ -367,6 +373,19 @@ describe('/authorize', () => {
     const res = await call(query(missing));
     expect(location(res).searchParams.get('error')).toBe('invalid_request');
     expect((await call(query(params(id, REDIRECT, { resource: `${PUBLIC}/mcp/` })))).status).toBe(200);
+  });
+  it('never redirects request errors for a client the owner has not approved', async () => {
+    const { call, query, params, register } = flow();
+    const id = (await register()).body.client_id as string;
+    const { code_challenge: _, ...missing } = params(id);
+    for (const q of [...requestErrors.map(([extra]) => params(id, REDIRECT, extra)), missing, params(id, REDIRECT, { state: 'x'.repeat(1025) })]) {
+      const res = await call(query(q));
+      expect(res.status).toBe(400);
+      expect(res.headers.get('location')).toBeNull();
+      expect(res.headers.get('content-security-policy')).toContain("frame-ancestors 'none'");
+      expect(await res.text()).toContain('This app sent a request kordn cannot accept.');
+    }
+    expect((await call(query(params(id)))).status).toBe(200);
   });
   it('sends the consent page with framing and referrer protection', async () => {
     const { call, query, params, register } = flow();
@@ -466,9 +485,9 @@ describe('/authorize', () => {
     const wrong = await submit({ ...(await open(id)), decision: 'approve', owner_token: 'nope' });
     expect(wrong.status).toBe(401);
   });
-  it('refuses a state over 1024 characters without echoing it', async () => {
-    const { call, query, params, register } = flow();
-    const id = (await register()).body.client_id as string;
+  it('refuses a state over 1024 characters without echoing it to an approved client', async () => {
+    const { call, query, params, approvedClient } = flow();
+    const id = await approvedClient();
     const long = await call(query(params(id, REDIRECT, { state: 'x'.repeat(1025) })));
     expect(long.status).toBe(303);
     expect(Object.fromEntries(location(long).searchParams)).toEqual({ error: 'invalid_request', iss: PUBLIC });

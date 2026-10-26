@@ -278,15 +278,18 @@ export function createOAuthServer(options: OAuthServerOptions): OAuthServer {
     if (!client || redirectUri === null || !client.redirectUris.includes(redirectUri)) {
       return errorPage(400, 'This app is not registered with kordn, or it asked to return to an address it did not register.');
     }
+    // Anyone can register a client with any redirect URI, so until the owner has approved one,
+    // its errors stay here: otherwise kordn's address would be an open redirect to that URI.
+    const reject = (error: string, state: string | null) => client.approvedAt === null
+      ? errorPage(400, 'This app sent a request kordn cannot accept. Try connecting again from the app.')
+      : redirectBack(redirectUri, { error }, state);
     const state = q.get('state');
     // Stored with the pending request; an oversized one isn't echoed back either.
-    if (state !== null && state.length > MAX_STATE_LENGTH) return redirectBack(redirectUri, { error: 'invalid_request' }, null);
+    if (state !== null && state.length > MAX_STATE_LENGTH) return reject('invalid_request', null);
     const challenge = q.get('code_challenge');
-    if (q.get('response_type') !== 'code') return redirectBack(redirectUri, { error: 'unsupported_response_type' }, state);
-    if (challenge === null || !isValidChallenge(challenge) || q.get('code_challenge_method') !== 'S256') {
-      return redirectBack(redirectUri, { error: 'invalid_request' }, state);
-    }
-    if (!isOurResource(q.get('resource'))) return redirectBack(redirectUri, { error: 'invalid_target' }, state);
+    if (q.get('response_type') !== 'code') return reject('unsupported_response_type', state);
+    if (challenge === null || !isValidChallenge(challenge) || q.get('code_challenge_method') !== 'S256') return reject('invalid_request', state);
+    if (!isOurResource(q.get('resource'))) return reject('invalid_target', state);
     return showConsent(200, client, { clientId: client.id, redirectUri, codeChallenge: challenge, resource: resourceString, state });
   }
 
