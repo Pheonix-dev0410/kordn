@@ -8,6 +8,12 @@ on:
 jobs:
   test:
     runs-on: ubuntu-24.04
+    # Stripe's official mock, built from their OpenAPI spec: it rejects unknown endpoints and
+    # parameters, so the Stripe adapter's requests are checked against the real API's shape.
+    services:
+      stripe-mock:
+        image: stripe/stripe-mock:v0.206.0
+        ports: ['12111:12111']
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -17,6 +23,8 @@ jobs:
       - run: npm ci
       - run: npm run typecheck
       - run: npm test
+        env:
+          STRIPE_MOCK_URL: http://localhost:12111
 
   # The same suite with the Docker tests on: builds the sandbox image and runs the isolation
   # checks, the escape attempts and kordn contain against a real daemon.
