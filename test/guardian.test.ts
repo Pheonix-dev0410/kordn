@@ -166,3 +166,27 @@ describe('guardian', () => {
     expect(h.ledger.audit.verifyChain()).toBe(true);
   });
 });
+
+describe('guardian: recordOAuthEvent', () => {
+  it('logs the app as the guardian agent and keeps the chain valid', async () => {
+    h = harness();
+    await h.guardian.recordOAuthEvent('oauth.approved', { client: 'ChatGPT', redirectHost: 'chatgpt.com' });
+    const events = await h.guardian.listActivity({ events: ['oauth.approved'] });
+    expect(events).toHaveLength(1);
+    expect(events[0]).toMatchObject({ agent: h.policy.agentId, metadata: { client: 'ChatGPT', redirectHost: 'chatgpt.com' } });
+    expect(h.ledger.audit.verifyChain()).toBe(true);
+  });
+
+  it('cuts long values to 100 characters and strips control characters', async () => {
+    h = harness();
+    await expect(h.guardian.recordOAuthEvent('oauth.denied', { client: 'x'.repeat(10_000), redirectHost: 'a\u0000b\u202ec.com' })).resolves.toBeUndefined();
+    const [event] = await h.guardian.listActivity({ events: ['oauth.denied'] });
+    expect(event!.metadata).toEqual({ client: 'x'.repeat(100), redirectHost: 'abc.com' });
+  });
+
+  it('resolves when the ledger cannot be written', async () => {
+    h = harness();
+    h.ledger.db.exec('PRAGMA query_only=ON');
+    await expect(h.guardian.recordOAuthEvent('oauth.revoked', { client: 'c', redirectHost: 'h' })).resolves.toBeUndefined();
+  });
+});

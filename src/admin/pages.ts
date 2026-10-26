@@ -194,6 +194,7 @@ export const ACTIVITY_FILTERS = {
   pending: ['policy.require_approval'],
   succeeded: ['transfer.succeeded'],
   unknown: ['transfer.unknown'],
+  apps: ['oauth.approved', 'oauth.denied', 'oauth.revoked', 'oauth.refresh_reused'],
 } as const satisfies Record<string, readonly AuditEvent['event'][]>;
 
 export type ActivityType = keyof typeof ACTIVITY_FILTERS;

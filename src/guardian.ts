@@ -1,8 +1,11 @@
 import { DenyCode, parseToolCall, Policy, ToolName, TOOL_OUTPUTS } from './schema.js';
 import type { AdapterResult, BankAdapter } from './schema.js';
-import type { ActivityFilter, ApprovalResult, CallResult, Guardian as GuardianApi, PendingApproval, PolicyUpdateResult } from './guardian-api.js';
+import type { ActivityFilter, ApprovalResult, CallResult, Guardian as GuardianApi, OAuthAuditEvent, PendingApproval, PolicyUpdateResult } from './guardian-api.js';
 import { ApprovalDecisionError, GuardianError, Ledger, PolicyVersionConflict } from './ledger.js';
 import type { Reservation } from './ledger.js';
+
+/** App-supplied text reaches the audit log, so it loses control characters and is cut short. */
+export const cleanAppText = (text: string): string => text.replace(/[\p{Cc}\p{Cf}]/gu, '').slice(0, 100);
 
 export { GuardianError } from './ledger.js';
 
@@ -223,5 +226,12 @@ export class Guardian implements GuardianApi {
       this.ledger.transaction(() => this.ledger.event(this.agentId, 'action.attempted', null, null, null, null, null,
         { reason: 'connection_limit', refused: count }));
     } catch { /* A failed audit writer cannot make the socket server accept the refused connection. */ }
+  }
+
+  async recordOAuthEvent(event: OAuthAuditEvent, app: { client: string; redirectHost: string }): Promise<void> {
+    try {
+      const metadata = { client: cleanAppText(app.client), redirectHost: cleanAppText(app.redirectHost) };
+      this.ledger.transaction(() => this.ledger.event(this.agentId, event, null, null, null, null, null, metadata));
+    } catch { /* A failed audit writer must not break the OAuth flow it describes. */ }
   }
 }

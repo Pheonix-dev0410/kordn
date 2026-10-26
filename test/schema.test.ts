@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import policy from '../examples/policy.json' with { type: 'json' };
 import {
   APPROVAL_TTL_SEC,
+  AuditEvent,
   BUDGET_STATES,
   canTransition,
   DenyCode,
@@ -126,5 +127,13 @@ describe('hashing', () => {
     expect(requestHash({ a: 1, b: 2 })).toBe(requestHash({ b: 2, a: 1 }));
     expect(() => canonicalJson({ a: Number.NaN })).toThrow();
     expect(() => canonicalJson({ a: undefined })).toThrow();
+  });
+});
+
+describe('oauth audit events', () => {
+  it.each(['oauth.approved', 'oauth.denied', 'oauth.revoked', 'oauth.refresh_reused'])('accepts %s', (event) => {
+    const base = { timestamp: '2026-10-27T00:00:00.000Z', agent: 'agent-1', tool: null, requestHash: null,
+      policyVersion: null, reasonCode: null, reservationId: null, metadata: {}, prevHash: null };
+    expect(AuditEvent.safeParse({ ...base, event }).success).toBe(true);
   });
 });

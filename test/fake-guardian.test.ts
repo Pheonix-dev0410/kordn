@@ -455,3 +455,27 @@ describe('fake guardian: recordRefusedConnection never rejects', () => {
     await expect(g.recordRefusedConnection(3)).resolves.toBeUndefined();
   });
 });
+
+describe('fake guardian: recordOAuthEvent', () => {
+  it('logs the app as the policy agent', async () => {
+    const g = createFakeGuardian({ policy });
+    await g.recordOAuthEvent('oauth.approved', { client: 'ChatGPT', redirectHost: 'chatgpt.com' });
+    const events = await g.listActivity({ events: ['oauth.approved'] });
+    expect(events).toHaveLength(1);
+    expect(AuditEvent.safeParse(events[0]).success).toBe(true);
+    expect(events[0]).toMatchObject({ agent, metadata: { client: 'ChatGPT', redirectHost: 'chatgpt.com' } });
+  });
+
+  it('cuts long values to 100 characters and strips control characters', async () => {
+    const g = createFakeGuardian({ policy });
+    await expect(g.recordOAuthEvent('oauth.denied', { client: 'x'.repeat(10_000), redirectHost: 'a\u0000b\u202ec.com' })).resolves.toBeUndefined();
+    expect((await g.listActivity())[0]!.metadata).toEqual({ client: 'x'.repeat(100), redirectHost: 'abc.com' });
+  });
+
+  it('resolves even when logging fails', async () => {
+    let broken = false;
+    const g = createFakeGuardian({ policy, nowMs: () => { if (broken) throw new Error('clock gone'); return Date.UTC(2026, 9, 25); } });
+    broken = true;
+    await expect(g.recordOAuthEvent('oauth.revoked', { client: 'c', redirectHost: 'h' })).resolves.toBeUndefined();
+  });
+});
