@@ -299,7 +299,7 @@ npm run test:concurrency                          # 50 rounds of concurrency and
 | `examples/` | Example rules and bank files |
 | `sandbox/` | The Contain image and the demo agent |
 
-Make a branch for each issue, open a pull request into `main`, and link the issue. Report security problems privately through GitHub's security advisories, not in issues.
+Contributions are welcome: see [CONTRIBUTING.md](CONTRIBUTING.md). Report security problems privately through GitHub's security advisories, not in issues.
 
 ## License
 
