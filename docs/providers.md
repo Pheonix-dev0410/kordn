@@ -7,7 +7,7 @@ How each one is tested:
 - **PayPal:** against the real PayPal sandbox. The developer sandbox is free with any PayPal login.
 - **Stripe:** against [stripe-mock](https://github.com/stripe/stripe-mock), Stripe's mock built from their API spec, in CI. That checks every request kordn sends, not Stripe's behaviour, so try it in your own test mode first. New Stripe accounts are invite-only in India.
 
-## 1. Get test credentials and an id for each payee
+## 1. Get test keys and an id for each payee
 
 **PayPal**
 1. On [developer.paypal.com](https://developer.paypal.com), under Sandbox accounts, create a **US** business account. PayPal refuses payouts from Indian accounts, sandbox included (`PAYOUT_NOT_AVAILABLE`).
@@ -19,35 +19,33 @@ How each one is tested:
 1. A `sk_test_` key. A restricted key that can create transfers and read your balance is enough.
 2. A connected account (`acct_…`) for each payee.
 
-## 2. Map your payees
-
-Copy `examples/bank-paypal.json` or `examples/bank-stripe.json` and fill in the ids. Every payee in your policy needs one:
-
-```json
-{
-  "provider": "paypal",
-  "payees": {
-    "utilities": "utilities-company@personal.example.com",
-    "landlord": "landlord@personal.example.com"
-  }
-}
-```
-
-In your policy, set `resourceId` to `paypal:main` or `stripe:main`. Amounts are in cents.
-
-## 3. Start kordn with the keys in the environment
-
-Keys go in the environment, never in a file in the repo:
+## 2. Run `kordn setup`
 
 ```sh
-claude mcp add kordn \
-  -e PAYPAL_CLIENT_ID=... -e PAYPAL_CLIENT_SECRET=... \
-  -- kordn --policy /path/to/my-policy.json --bank /path/to/my-bank.json --data ~/.local/state/kordn-paypal
+kordn setup
 ```
 
-For Stripe, set `STRIPE_API_KEY` instead. A separate `--data` directory keeps this account's ledger apart from the mock bank's.
+Choose PayPal or Stripe, then:
+1. Paste the keys. Secrets are hidden as you type.
+2. Add each payee: a short name the AI will use, like `landlord`, and their PayPal email or `acct_…` id.
+3. Set your limits.
 
-kordn uses the PayPal sandbox and refuses live Stripe keys unless you add `--live`. With `--live`, real money moves, at your own risk.
+kordn checks the keys by reading your balance, then saves everything in `~/.config/kordn`, readable only by you. From then on, a plain `kordn` guards that account. Run `kordn setup` again to change anything.
+
+kordn uses the PayPal sandbox and refuses live Stripe keys unless you start it with `--live`. With `--live`, real money moves, at your own risk.
+
+<details>
+<summary>Without setup: the files by hand</summary>
+
+Copy `examples/bank-paypal.json` or `examples/bank-stripe.json` and map each payee in your policy to an id. In the policy, set `resourceId` to `paypal:main` or `stripe:main`; amounts are in cents. Then pass the keys in the environment:
+
+```sh
+PAYPAL_CLIENT_ID=... PAYPAL_CLIENT_SECRET=... kordn --policy my-policy.json --bank my-bank.json
+```
+
+For Stripe, set `STRIPE_API_KEY`. `--policy` and `--bank` take precedence over what setup saved.
+
+</details>
 
 ## PayPal notes
 

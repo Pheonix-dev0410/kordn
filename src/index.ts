@@ -23,11 +23,15 @@ import { startQuickTunnel } from './tunnel.js';
 // stdio transport, so everything human-readable goes to stderr.
 
 const USAGE = `usage: kordn [--policy <path>] [--data <dir>] [--bank <path> [--live]] [--guardian <socket>] [--http [--port <n>] [--allowed-host <name>]... [--public-url <url> | --tunnel]] [--admin [--admin-port <n>]]
+       kordn setup [--data <dir>]
        kordn contain [--image <ref>] [--policy <path>] [--data <dir>] [--bank <path> [--live]] [--require-contain] [--admin [--admin-port <n>]] [-- <command>...]
 
   (default)              MCP over stdio, guardian in-process (Guard mode)
-  --policy <path>        policy file; replaces the stored policy (default: examples/policy.json,
-                         used only on first run)
+  setup                  choose the account to guard (mock, PayPal, Stripe), its keys, payees
+                         and limits; saved in ~/.config/kordn and used whenever --policy and
+                         --bank aren't given
+  --policy <path>        policy file; replaces the stored policy (default: what kordn setup saved,
+                         else examples/policy.json, used only on first run)
   --data <dir>           where the ledger and mock bank live (default: ~/.local/state/kordn)
   --bank <path>          a real payment provider instead of the mock bank (stripe or paypal);
                          keys come from the environment, test mode only
@@ -57,15 +61,22 @@ process.on('warning', (warning) => {
   process.stderr.write(`${warning.name}: ${warning.message}\n`);
 });
 
-async function openGuardian(options: { data?: string; policy?: string; bank?: string; live: boolean }, policy: Policy) {
+/** The account to guard: --policy and --bank if given, else what `kordn setup` saved, else the example. */
+async function account(options: { policy?: string; bank?: string }, env: NodeJS.ProcessEnv) {
+  const saved = options.policy === undefined && options.bank === undefined ? (await import('./setup.js')).savedSetup(env) : null;
+  if (saved) return { policy: loadPolicy(saved.policyPath), bank: saved.bankPath, env: saved.env, replace: false };
+  return { policy: loadPolicy(options.policy ?? DEFAULT_POLICY), bank: options.bank, env, replace: options.policy !== undefined };
+}
+
+async function openGuardian(options: { data?: string; live: boolean }, chosen: Awaited<ReturnType<typeof account>>) {
   const { defaultDataDir, openLocalGuardian } = await import('./local-guardian.js');
   const { loadBankConfig, openBank } = await import('./bank-config.js');
-  const bank = options.bank === undefined ? undefined : loadBankConfig(options.bank);
+  const bank = chosen.bank === undefined ? undefined : loadBankConfig(chosen.bank);
   return openLocalGuardian(
     options.data ?? defaultDataDir(),
-    policy,
-    options.policy !== undefined,
-    bank && ((enforced) => openBank(bank, enforced, process.env, options.live)),
+    chosen.policy,
+    chosen.replace,
+    bank && ((enforced) => openBank(bank, enforced, chosen.env, options.live)),
   );
 }
 
@@ -366,8 +377,9 @@ async function serve(options: Options, env: NodeJS.ProcessEnv): Promise<void> {
     handleCall = createGuardianClient(options.guardian);
   } else {
     // The agent identity is the launcher's policy, not the client's.
-    const policy = loadPolicy(options.policy ?? DEFAULT_POLICY);
-    const local = (await openGuardian(options, policy)).guardian;
+    const chosen = await account(options, env);
+    const policy = chosen.policy;
+    const local = (await openGuardian(options, chosen)).guardian;
     guardian = local;
     agentId = policy.agentId;
     resourceId = policy.resourceId;
@@ -455,9 +467,10 @@ async function serve(options: Options, env: NodeJS.ProcessEnv): Promise<void> {
 /** Returns the exit code: the agent's, or 1 if it didn't run or didn't finish. */
 async function contain(options: ContainOptions): Promise<number> {
   assertContainPlatform();
-  const policy = loadPolicy(options.policy ?? DEFAULT_POLICY);
+  const chosen = await account(options, process.env);
+  const policy = chosen.policy;
   // One guardian, one agent: the policy's.
-  const local = await openGuardian(options, policy);
+  const local = await openGuardian(options, chosen);
   const guardian = local.guardian;
   const controller = new AbortController();
   let stoppedBy: NodeJS.Signals | undefined;
@@ -524,6 +537,11 @@ async function contain(options: ContainOptions): Promise<number> {
 }
 
 async function main(argv: string[], env: NodeJS.ProcessEnv): Promise<void> {
+  if (argv[0] === 'setup') {
+    const { values } = parseOrUsage(() => parseArgs({ args: argv.slice(1), strict: true, options: { data: { type: 'string' }, help: { type: 'boolean', short: 'h', default: false } } }));
+    if (values.help) return void process.stdout.write(`${USAGE}\n`);
+    return (await import('./setup.js')).runSetup({ data: values.data }, env);
+  }
   if (argv[0] === 'contain') {
     const options = parseContain(argv.slice(1));
     if (options.help) return void process.stdout.write(`${USAGE}\n`);

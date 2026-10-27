@@ -37,7 +37,7 @@ describe.skipIf(!DOCKER_TESTS)('kordn contain against Docker', () => {
     const agent = ['/nodejs/bin/node', '-e', "setTimeout(() => import('/app/sandbox/agent.mjs'), 4000)"];
     const child = spawn(process.execPath, [cli, 'contain', '--image', image, '--admin', '--', ...agent], {
       // The whole environment, so docker finds the same daemon (DOCKER_HOST, docker context) as the tests.
-      env: { ...process.env, XDG_RUNTIME_DIR: runtime, XDG_STATE_HOME: tempDir(), TMPDIR: tmp },
+      env: { ...process.env, XDG_RUNTIME_DIR: runtime, XDG_STATE_HOME: tempDir(), XDG_CONFIG_HOME: tempDir(), TMPDIR: tmp },
       stdio: ['ignore', 'pipe', 'pipe'],
     });
     let stdout = '';
