@@ -5,8 +5,8 @@ import { z } from 'zod';
 export const MAX_AMOUNT_MINOR = 100_000_000_000;
 
 export const AgentId = z.string().regex(/^[a-z0-9][a-z0-9-]{0,62}$/);
-// The provider, then your name for the account: mock-bank:checking-01, stripe:main, paypal:main.
-export const ResourceId = z.string().regex(/^(mock-bank|stripe|paypal):[a-z0-9-]{1,64}$/);
+// The provider, then your name for the account: mock-bank:checking-01, stripe:main, paypal:main, plaid:main.
+export const ResourceId = z.string().regex(/^(mock-bank|stripe|paypal|plaid):[a-z0-9-]{1,64}$/);
 export const PayeeId = z.string().regex(/^[a-z0-9][a-z0-9-]{0,63}$/);
 export const IdempotencyKey = z.string().regex(/^[A-Za-z0-9_-]{8,128}$/);
 export const TransferRef = z.string().regex(/^tr_[A-Za-z0-9_-]{16,64}$/);

@@ -27,14 +27,14 @@ const USAGE = `usage: kordn [--policy <path>] [--data <dir>] [--bank <path> [--l
        kordn contain [--image <ref>] [--policy <path>] [--data <dir>] [--bank <path> [--live]] [--require-contain] [--admin [--admin-port <n>]] [-- <command>...]
 
   (default)              MCP over stdio, guardian in-process (Guard mode)
-  setup                  choose the account to guard (mock, PayPal, Stripe), its keys, payees
+  setup                  choose the account to guard (mock, PayPal, Stripe, Plaid), its keys, payees
                          and limits; saved in ~/.config/kordn and used whenever --policy and
                          --bank aren't given
   --policy <path>        policy file; replaces the stored policy (default: what kordn setup saved,
                          else examples/policy.json, used only on first run)
   --data <dir>           where the ledger and mock bank live (default: ~/.local/state/kordn)
-  --bank <path>          a real payment provider instead of the mock bank (stripe or paypal);
-                         keys come from the environment, test mode only
+  --bank <path>          a real provider instead of the mock bank (stripe, paypal, or plaid to
+                         read a bank account); keys come from the environment, test mode only
   --live                 allow live provider keys (PayPal: use live, not sandbox): real money moves
   --guardian <socket>    forward every call to the guardian on this Unix socket (Contain mode)
   --http                 Streamable HTTP at http://127.0.0.1:<port>/mcp; the token is KORDN_TOKEN, or

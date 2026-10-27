@@ -401,6 +401,8 @@ export interface PolicyView {
   values: PolicyFormValues;
   /** Bank-backed accounts need an id for every payee, which only kordn setup or --bank adds. */
   realBank?: boolean;
+  /** Transfers are off in the policy, as for a read-only Plaid account: no payment fields. */
+  paymentsOff?: boolean;
 }
 
 const FIELD_HELP: Record<(typeof POLICY_FIELDS)[number]['name'], string> = {
@@ -429,23 +431,31 @@ export function policyPage(ctx: PageContext & { csrf: string }, view: PolicyView
     <form method="post" action="/policy">
       <input type="hidden" name="csrf" value="${ctx.csrf}">
       <input type="hidden" name="version" value="${view.version}">
-      <div class="card">
-        <h2>Payments</h2>
-        ${field('maxSingleUsd')}
-        ${field('maxTotalUsd')}
-        ${field('transfersPerDay')}
-        ${field('approvalAboveUsd')}
-      </div>
-      <div class="card">
-        <h2>Who the AI may pay</h2>
-        <div class="field">
-          <label for="payees">Allowed payees (one id per line)</label>
-          <textarea id="payees" name="payees" rows="5">${view.values.payees}</textarea>
-          <p class="hint">Payments to anyone else are refused.${view.realBank
-            ? ' A new payee also needs their PayPal email or Stripe account id: add it with kordn setup.'
-            : ' The mock bank knows utilities and landlord.'}</p>
-        </div>
-      </div>
+      ${view.paymentsOff
+        ? html`<div class="card">
+            <h2>Payments</h2>
+            <p class="hint">Off for this account: the AI can read it, but can't pay anyone.</p>
+            ${(['maxSingleUsd', 'maxTotalUsd', 'transfersPerDay', 'approvalAboveUsd', 'payees'] as const).map(
+              (name) => html`<input type="hidden" name="${name}" value="${view.values[name]}">`,
+            )}
+          </div>`
+        : html`<div class="card">
+            <h2>Payments</h2>
+            ${field('maxSingleUsd')}
+            ${field('maxTotalUsd')}
+            ${field('transfersPerDay')}
+            ${field('approvalAboveUsd')}
+          </div>
+          <div class="card">
+            <h2>Who the AI may pay</h2>
+            <div class="field">
+              <label for="payees">Allowed payees (one id per line)</label>
+              <textarea id="payees" name="payees" rows="5">${view.values.payees}</textarea>
+              <p class="hint">Payments to anyone else are refused.${view.realBank
+                ? ' A new payee also needs their PayPal email or Stripe account id: add it with kordn setup.'
+                : ' The mock bank knows utilities and landlord.'}</p>
+            </div>
+          </div>`}
       <div class="card">
         <h2>Reading</h2>
         ${field('readsPerHour')}

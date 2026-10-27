@@ -4,13 +4,15 @@ import { join } from 'node:path';
 import { createInterface } from 'node:readline';
 import { Writable } from 'node:stream';
 import { BankConfig, openBank } from './bank-config.js';
+import { PlaidAdapter, hostedLink, sandboxItem, usdAccounts, waitForItem } from './plaid.js';
+import type { PlaidEnvironment, PlaidKeys } from './plaid.js';
 import { AmountMinor, PayeeId, Policy } from './schema.js';
 
 // `kordn setup`: asks which account to guard, the API keys, who the agent may pay and the
 // limits, checks the keys, and saves it all in the config dir. A plain `kordn` then uses it.
 //
 //   policy.json  the rules, also applied to the stored policy right away
-//   bank.json    the provider and its id for each payee (not for the mock bank)
+//   bank.json    the provider and its id for each payee, or for Plaid the bank account (not for the mock bank)
 //   keys.env     the provider's API keys, KEY=value; the environment wins over it
 
 export function configDir(env: NodeJS.ProcessEnv = process.env): string {
@@ -44,7 +46,7 @@ function parseKeys(text: string): Record<string, string> {
   return keys;
 }
 
-type Provider = 'mock' | 'paypal' | 'stripe';
+type Provider = 'mock' | 'paypal' | 'stripe' | 'plaid';
 
 const PROVIDERS: Record<Provider, { label: string; resourceId: string; keys: [string, string, boolean][]; payeeLabel: string; payeeId: RegExp }> = {
   mock: { label: 'the built-in mock bank (pretend money)', resourceId: 'mock-bank:checking-01', keys: [], payeeLabel: '', payeeId: /^$/ },
@@ -62,6 +64,13 @@ const PROVIDERS: Record<Provider, { label: string; resourceId: string; keys: [st
     payeeLabel: 'their connected account id (acct_...)',
     payeeId: /^acct_[A-Za-z0-9]+$/,
   },
+  plaid: {
+    label: 'your bank through Plaid (read-only)',
+    resourceId: 'plaid:main',
+    keys: [['PLAID_CLIENT_ID', 'client_id', false], ['PLAID_SECRET', 'Secret', true]],
+    payeeLabel: '',
+    payeeId: /^$/,
+  },
 };
 
 const HELP: Record<Exclude<Provider, 'mock'>, string> = {
@@ -71,6 +80,9 @@ const HELP: Record<Exclude<Provider, 'mock'>, string> = {
   3. Copy the app's Client ID and Secret.`,
   stripe: `You need a Stripe test key and a connected account (acct_...) for each payee.
   Dashboard: Developers > API keys (test mode), and Connect > Accounts.`,
+  plaid: `You need a Plaid account (free to sign up at dashboard.plaid.com).
+  Under Developers > Keys, copy the client_id and the secret for the environment you chose.
+  Plaid only reads: the AI can see the balance and transactions, but can't pay anyone.`,
 };
 
 /** Reads answers line by line, so it works on a terminal and with piped input alike. */
@@ -110,13 +122,23 @@ export async function runSetup(options: { data?: string }, env: NodeJS.ProcessEn
     say('  1) the built-in mock bank: pretend money, to try kordn out');
     say('  2) PayPal (sandbox)');
     say('  3) Stripe (test mode)');
+    say('  4) a bank account through Plaid: read-only, balance and transactions (US banks)');
     let provider: Provider | undefined;
     while (!provider) {
-      provider = ({ '': 'mock', '1': 'mock', '2': 'paypal', '3': 'stripe' } as const)[await p.ask('Choose 1, 2 or 3 [1]: ')];
+      provider = ({ '': 'mock', '1': 'mock', '2': 'paypal', '3': 'stripe', '4': 'plaid' } as const)[await p.ask('Choose 1, 2, 3 or 4 [1]: ')];
     }
     const info = PROVIDERS[provider];
 
     const keys: Record<string, string> = {};
+    let environment: PlaidEnvironment = 'sandbox';
+    if (provider === 'plaid') {
+      say('\nWhich Plaid environment?');
+      say('  1) Sandbox: test banks and pretend data');
+      say('  2) Production: your real bank. kordn is an alpha: at your own risk');
+      let choice: PlaidEnvironment | undefined;
+      while (!choice) choice = ({ '': 'sandbox', '1': 'sandbox', '2': 'production' } as const)[await p.ask('Choose 1 or 2 [1]: ')];
+      environment = choice;
+    }
     if (provider !== 'mock') {
       say(`\n${HELP[provider]}\n`);
       for (const [name, label, hidden] of info.keys) {
@@ -129,8 +151,16 @@ export async function runSetup(options: { data?: string }, env: NodeJS.ProcessEn
       }
     }
 
+    let plaid: { accountId: string; accessToken: string } | undefined;
     let payees: Record<string, string> = {};
-    if (provider === 'mock') {
+    if (provider === 'plaid') {
+      try {
+        plaid = await connectPlaid(p, say, { clientId: keys.PLAID_CLIENT_ID!, secret: keys.PLAID_SECRET!, environment });
+      } catch (error) {
+        throw new Error(`couldn't connect through Plaid (${error instanceof Error ? error.message : String(error)}); nothing saved`);
+      }
+      keys.PLAID_ACCESS_TOKEN = plaid.accessToken;
+    } else if (provider === 'mock') {
       say('\nThe mock bank knows two payees: utilities and landlord. The AI may pay both.');
       payees = { utilities: '', landlord: '' };
     } else {
@@ -156,7 +186,9 @@ export async function runSetup(options: { data?: string }, env: NodeJS.ProcessEn
       }
     }
 
-    say('\nLimits. Amounts in dollars.');
+    // Plaid can't pay, so its payment limits are only placeholders: transfers stay off.
+    const readOnly = provider === 'plaid';
+    if (!readOnly) say('\nLimits. Amounts in dollars.');
     const dollars = async (question: string, fallback: number) => {
       for (;;) {
         const answer = (await p.ask(`  ${question} [${fallback}]: `)).replace(/^\$/, '');
@@ -174,15 +206,15 @@ export async function runSetup(options: { data?: string }, env: NodeJS.ProcessEn
         say('  Enter a whole number.');
       }
     };
-    let single = await dollars('Most for one payment', 100);
-    let daily = await dollars('Most per day, all payments together', 250);
+    let single = readOnly ? 10_000 : await dollars('Most for one payment', 100);
+    let daily = readOnly ? 25_000 : await dollars('Most per day, all payments together', 250);
     while (single > daily) {
       say('  One payment can\'t be more than the daily total.');
       single = await dollars('Most for one payment', 100);
       daily = await dollars('Most per day, all payments together', 250);
     }
-    const calls = await count('Most payments per day', 3);
-    const approval = await dollars('Ask me first for payments over', 75);
+    const calls = readOnly ? 0 : await count('Most payments per day', 3);
+    const approval = readOnly ? 0 : await dollars('Ask me first for payments over', 75);
 
     const policy = Policy.parse({
       schemaVersion: 1,
@@ -192,7 +224,7 @@ export async function runSetup(options: { data?: string }, env: NodeJS.ProcessEn
       resourceId: info.resourceId,
       reads: { allow: true, maxCalls: 30, windowSec: 3600, maxRowsPerCall: 20, maxLookbackDays: 30 },
       transfers: {
-        allow: true,
+        allow: !readOnly,
         maxCalls: calls,
         windowSec: 86_400,
         currency: 'USD',
@@ -202,9 +234,9 @@ export async function runSetup(options: { data?: string }, env: NodeJS.ProcessEn
         humanApprovalAboveMinor: approval,
       },
     });
-    const bank = provider === 'mock' ? undefined : BankConfig.parse({ provider, payees });
+    const bank = provider === 'mock' ? undefined : BankConfig.parse(plaid ? { provider, accountId: plaid.accountId } : { provider, payees });
 
-    if (bank && (await p.ask(`\nCheck the keys with ${info.label} now? [Y/n]: `)).toLowerCase() !== 'n') {
+    if (bank && !plaid && (await p.ask(`\nCheck the keys with ${info.label} now? [Y/n]: `)).toLowerCase() !== 'n') {
       try {
         const balance = await openBank(bank, policy, { ...env, ...keys }).getBalance(policy.resourceId);
         say(`  Works. Balance: $${(balance.balanceMinor / 100).toFixed(2)}`);
@@ -241,4 +273,43 @@ export async function runSetup(options: { data?: string }, env: NodeJS.ProcessEn
   } finally {
     p.close();
   }
+}
+
+/** Connects a bank through Plaid: a sandbox test bank, or Plaid's sign-in page in the browser. */
+async function connectPlaid(p: Prompter, say: (text?: string) => void, keys: PlaidKeys): Promise<{ accountId: string; accessToken: string }> {
+  let accessToken: string;
+  let useTestBank = false;
+  if (keys.environment === 'sandbox') {
+    say('\nConnect a bank:');
+    say('  1) a test bank with sample transactions, one of them a planted prompt injection');
+    say("  2) sign in on Plaid's page in your browser (sandbox login: user_good / pass_good)");
+    useTestBank = (await p.ask('Choose 1 or 2 [1]: ')) !== '2';
+  }
+  if (useTestBank) {
+    accessToken = await sandboxItem(keys);
+  } else {
+    const link = await hostedLink(keys);
+    say(`\nOpen this link, choose your bank and sign in. kordn never sees your bank login:\n  ${link.url}`);
+    say('Waiting for you to finish (up to 30 minutes)...');
+    accessToken = await waitForItem(keys, link.linkToken);
+  }
+
+  const accounts = await usdAccounts(keys, accessToken);
+  if (!accounts.length) throw new Error('that bank has no checking or savings account in USD');
+  let account = accounts[0]!;
+  if (accounts.length > 1) {
+    say('\nWhich account should kordn guard?');
+    accounts.forEach((a, i) => say(`  ${i + 1}) ${a.label}`));
+    for (;;) {
+      const answer = await p.ask(`Choose 1-${accounts.length} [1]: `);
+      const picked = accounts[(answer ? Number(answer) : 1) - 1];
+      if (picked) {
+        account = picked;
+        break;
+      }
+    }
+  }
+  const balance = await new PlaidAdapter({ ...keys, accessToken, accountId: account.id }).getBalance('plaid:main');
+  say(`  Connected ${account.label}. Balance: $${(balance.balanceMinor / 100).toFixed(2)}`);
+  return { accountId: account.id, accessToken };
 }
