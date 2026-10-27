@@ -180,14 +180,26 @@ interface LinkSession {
   results?: { item_add_results?: { public_token: string }[] } | null;
 }
 
-/** Waits for the user to finish on the hosted page, then returns the access token. */
-export async function waitForItem(keys: PlaidKeys, linkToken: string, { intervalMs = 2_000, timeoutMs = 30 * 60_000 } = {}): Promise<string> {
+/**
+ * Waits until a bank is connected on the hosted page, then returns the access token. One link
+ * can have several sessions (a step like phone verification can end one, and reopening the
+ * link starts another), so an ended session isn't the end: `onSessionEnded` says so, and the
+ * wait goes on until the link expires.
+ */
+export async function waitForItem(
+  keys: PlaidKeys,
+  linkToken: string,
+  { intervalMs = 2_000, timeoutMs = 30 * 60_000, onSessionEnded = () => {} } = {},
+): Promise<string> {
   const deadline = Date.now() + timeoutMs;
+  let ended = 0;
   while (Date.now() < deadline) {
     const { link_sessions = [] } = await request<{ link_sessions?: LinkSession[] }>(keys, '/link/token/get', { link_token: linkToken });
     const added = link_sessions.flatMap((s) => s.results?.item_add_results ?? [])[0];
     if (added) return exchange(keys, added.public_token);
-    if (link_sessions.some((s) => s.finished_at)) throw new Error('the Plaid page closed without connecting a bank');
+    const endedNow = link_sessions.filter((s) => s.finished_at).length;
+    if (endedNow > ended) onSessionEnded();
+    ended = endedNow;
     await new Promise((resolve) => setTimeout(resolve, intervalMs));
   }
   throw new Error('timed out waiting for the Plaid page');

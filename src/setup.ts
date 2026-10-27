@@ -290,8 +290,10 @@ async function connectPlaid(p: Prompter, say: (text?: string) => void, keys: Pla
   } else {
     const link = await hostedLink(keys);
     say(`\nOpen this link, choose your bank and sign in. kordn never sees your bank login:\n  ${link.url}`);
-    say('Waiting for you to finish (up to 30 minutes)...');
-    accessToken = await waitForItem(keys, link.linkToken);
+    say('Waiting for you to finish (up to 30 minutes; Ctrl+C to stop)...');
+    accessToken = await waitForItem(keys, link.linkToken, {
+      onSessionEnded: () => say("  Plaid says the page closed before a bank was connected. If you didn't mean to, open the link again."),
+    });
   }
 
   const accounts = await usdAccounts(keys, accessToken);
