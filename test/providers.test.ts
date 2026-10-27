@@ -123,6 +123,11 @@ describe('Stripe', () => {
     expect(provider.sent).toEqual([]);
   });
 
+  it('adds up a negative available balance', async () => {
+    const provider = fakeProvider(() => ({ status: 200, json: { available: [{ amount: -30_000, currency: 'usd' }, { amount: 10_000, currency: 'usd' }] } }));
+    expect((await stripe(provider.fetch).getBalance('stripe:main')).balanceMinor).toBe(-20_000);
+  });
+
   it('reads the USD balance and labels transaction text as untrusted', async () => {
     const provider = fakeProvider((req) =>
       req.url.pathname === '/v1/balance'
@@ -262,6 +267,13 @@ describe('PayPal', () => {
     expect(provider.sent.at(-1)!.url.searchParams.get('start_date')).toBe('2026-10-20T00:00:00.000Z');
   });
 
+  it('reads a zero or negative balance as it is', async () => {
+    for (const [value, minor] of [['0.00', 0], ['-12.34', -1_234], ['-0.5', -50]] as const) {
+      const provider = fakeProvider((req) => (req.url.pathname === '/v1/oauth2/token' ? token : { status: 200, json: { balances: [{ currency: 'USD', total_balance: { value } }] } }));
+      expect((await adapter(provider.fetch).getBalance('paypal:main')).balanceMinor).toBe(minor);
+    }
+  });
+
   it('lists the newest transactions first, from the last pages', async () => {
     // PayPal lists oldest first, so the newest are on its last page.
     const tx = (id: string, day: number) => ({
@@ -311,6 +323,11 @@ describe('Plaid', () => {
     expect(balance!.headers).toMatchObject({ 'plaid-client-id': 'client', 'plaid-secret': 'secret' });
     expect(body(balance!)).toEqual({ access_token: 'access-sandbox-abc', options: { account_ids: ['acc_check'] } });
     expect(body(list!)).toMatchObject({ start_date: '2026-10-01', options: { account_ids: ['acc_check'], count: 5, include_original_description: true } });
+  });
+
+  it('reads an overdrawn account as a negative balance', async () => {
+    const provider = fakeProvider(() => ({ status: 200, json: { accounts: [{ account_id: 'acc_check', name: 'Checking', type: 'depository', balances: { available: -50.5, current: -40, iso_currency_code: 'USD' } }] } }));
+    expect((await adapter(provider.fetch).getBalance('plaid:main')).balanceMinor).toBe(-5_050);
   });
 
   it('follows the environment of the access token, and refuses anything else', async () => {
