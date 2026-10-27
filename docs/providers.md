@@ -84,3 +84,5 @@ For Stripe, set `STRIPE_API_KEY`. `--policy` and `--bank` take precedence over w
 - Balance and history can be up to 3 hours behind on PayPal's side, so the agent may see a balance from before its latest payouts. kordn's limits don't depend on it: they use kordn's own ledger.
 - PayPal can't look a payout up by kordn's id. After a lost reply or a restart, kordn checks by sending a $0 payout with the same id. PayPal either points to the real one or denies the $0 one (`ZERO_AMOUNT`, nothing moves), which also stops the original from arriving late. These denied $0 batches show up in your payout history.
 - A payout to an email with no PayPal account stays `UNCLAIMED` until it's claimed, or returned after 30 days. kordn counts it as spent.
+- An account that doesn't hold a PayPal balance, like one in India where money goes straight to the bank, gets `paypal:NOT_FOUND` for the balance. Its history still works. Such accounts can't send payouts either.
+- When PayPal, Stripe or Plaid refuses a call, the AI only gets `INTERNAL_UNAVAILABLE` or `ADAPTER_FAILED`. The dashboard's Activity page shows you the provider's error code, e.g. "bank said `paypal:NOT_FOUND`".

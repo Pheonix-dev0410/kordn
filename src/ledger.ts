@@ -162,17 +162,19 @@ export class Ledger {
     return result;
   }
 
-  private denied(agentId: string, call: ToolCall | null, hash: string | null, version: number | null, code: DenyCode): GuardianError {
+  private denied(agentId: string, call: ToolCall | null, hash: string | null, version: number | null, code: DenyCode,
+    extra: AuditEvent['metadata'] = {}): GuardianError {
     // Payee and amount of a refused transfer, so the owner sees what was attempted. Both are schema-checked.
-    const metadata: AuditEvent['metadata'] = call?.tool === 'af_propose_transfer' ? { payeeId: call.payeeId, amountMinor: call.amountMinor } : {};
+    const metadata: AuditEvent['metadata'] = call?.tool === 'af_propose_transfer' ? { payeeId: call.payeeId, amountMinor: call.amountMinor, ...extra } : { ...extra };
     this.event(agentId, 'policy.denied', call, hash, version, code, null, metadata);
     return new GuardianError(code);
   }
 
-  recordDenied(agentId: string, code: DenyCode): void {
+  /** A refusal outside admit(): a malformed call, a stopped agent, or a bank that failed (with why, in `metadata`). */
+  recordDenied(agentId: string, code: DenyCode, call: ToolCall | null = null, metadata: AuditEvent['metadata'] = {}): void {
     this.transaction(() => {
-      this.event(agentId, 'action.attempted');
-      this.denied(agentId, null, null, null, code);
+      this.event(agentId, 'action.attempted', call);
+      this.denied(agentId, call, null, null, code, metadata);
     });
   }
 
@@ -210,7 +212,7 @@ export class Ledger {
   }
 
   private transitionInTransaction(id: string, state: State, reason: TransferReasonCode | null = null,
-    event?: AuditEvent['event']): Reservation {
+    event?: AuditEvent['event'], metadata: AuditEvent['metadata'] = {}): Reservation {
     const r = this.get(id);
     if (!r || !canTransition(r.state, state)) throw new GuardianError('INVALID_ARGUMENTS', 'invalid state transition');
     this.db.prepare('UPDATE reservations SET state=?, updated_ms=?, reason_code=?, nonce=NULL WHERE id=?')
@@ -223,12 +225,13 @@ export class Ledger {
     // The pending nonce remains private to the admin API until consumed.
     if (state === 'PENDING_APPROVAL') this.db.prepare('UPDATE reservations SET nonce=? WHERE id=?').run(r.nonce, id);
     this.event(r.agentId, event ?? events[state]!, r.call, r.requestHash, r.policyVersion,
-      reason === 'ADAPTER_FAILED' ? null : reason, id, { state });
+      reason === 'ADAPTER_FAILED' ? null : reason, id, { ...metadata, state });
     return this.get(id)!;
   }
 
-  transition(id: string, state: State, reason: TransferReasonCode | null = null, event?: AuditEvent['event']): Reservation {
-    return this.transaction(() => this.transitionInTransaction(id, state, reason, event));
+  transition(id: string, state: State, reason: TransferReasonCode | null = null, event?: AuditEvent['event'],
+    metadata: AuditEvent['metadata'] = {}): Reservation {
+    return this.transaction(() => this.transitionInTransaction(id, state, reason, event, metadata));
   }
 
   /** Re-check under the same writer lock that commits DISPATCHING. */

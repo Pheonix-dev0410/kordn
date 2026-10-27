@@ -583,7 +583,9 @@ export function describe(e: AuditEvent, payments: ReadonlyMap<string, TransferSu
   const amount = typeof meta.amountMinor === 'number' ? meta.amountMinor : p?.amountMinor;
   const payee = typeof meta.payeeId === 'string' ? meta.payeeId : p?.payeeId;
   const what = amount !== undefined && payee !== undefined ? html`${money(amount)} to <code>${payee}</code>` : html`a payment`;
-  const why = e.reasonCode ? `: ${REASONS[e.reasonCode]}` : '';
+  // What the bank said, a short code the guardian already checked, e.g. paypal:NOT_FOUND.
+  const said = typeof meta.detail === 'string' ? html` (bank said <code>${meta.detail}</code>)` : null;
+  const why = html`${e.reasonCode ? `: ${REASONS[e.reasonCode]}` : ''}${said}`;
   const app = html`<strong>${String(meta.client ?? 'an app')}</strong> (<code>${String(meta.redirectHost ?? '')}</code>)`;
   switch (e.event) {
     case 'policy.allowed':

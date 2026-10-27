@@ -1,11 +1,32 @@
 import { DenyCode, parseToolCall, Policy, ToolName, TOOL_OUTPUTS } from './schema.js';
-import type { AdapterResult, BankAdapter } from './schema.js';
+import type { AdapterResult, AuditEvent, BankAdapter, ToolCall } from './schema.js';
 import type { ActivityFilter, ApprovalResult, CallResult, Guardian as GuardianApi, OAuthAuditEvent, Overview, PendingApproval, PolicyUpdateResult, TransferSummary } from './guardian-api.js';
 import { ApprovalDecisionError, GuardianError, Ledger, PolicyVersionConflict } from './ledger.js';
 import type { Reservation } from './ledger.js';
 
 /** App-supplied text reaches the audit log, so it loses control characters and is cut short. */
 export const cleanAppText = (text: string): string => Array.from(text.replace(/[\p{Cc}\p{Cf}]/gu, '')).slice(0, 100).join('');
+
+/** The bank took longer than the adapter timeout. */
+class NoAnswer extends GuardianError {
+  constructor() { super('INTERNAL_UNAVAILABLE', 'no answer in time'); }
+}
+
+/**
+ * Why a bank call failed, for the owner's log and dashboard only; the agent still sees just
+ * the code. Bank text can carry anything, so only a provider code like paypal:NOT_FOUND or
+ * "stripe 503" passes, plus a few fixed words; everything else is "error".
+ */
+function bankDetail(error: unknown): AuditEvent['metadata'] {
+  let detail = 'error';
+  try {
+    const text = error instanceof Error ? error.message : typeof error === 'string' ? error : '';
+    if (error instanceof NoAnswer || (error instanceof Error && error.name === 'TimeoutError')) detail = 'no answer in time';
+    else if (/^(paypal|stripe|plaid)[: ][A-Za-z0-9_.-]{1,48}$/.test(text)) detail = text;
+    else if (error instanceof TypeError && text === 'fetch failed') detail = 'network error';
+  } catch { /* A throwing getter says nothing. */ }
+  return { detail };
+}
 
 export { GuardianError } from './ledger.js';
 
@@ -19,12 +40,13 @@ export class Guardian implements GuardianApi {
     let timer: ReturnType<typeof setTimeout> | undefined;
     try {
       return await Promise.race([Promise.resolve().then(operation), new Promise<never>((_, reject) => {
-        timer = setTimeout(() => reject(new GuardianError('INTERNAL_UNAVAILABLE')), this.timeoutMs);
+        timer = setTimeout(() => reject(new NoAnswer()), this.timeoutMs);
       })]);
     } finally { clearTimeout(timer); }
   }
 
   async handleCall(agentId: string, tool: unknown, args: unknown): Promise<CallResult> {
+    let attempted: ToolCall | null = null;
     try {
       if (agentId !== this.agentId) {
         this.ledger.recordDenied(this.agentId, 'UNKNOWN_ACTION');
@@ -35,6 +57,7 @@ export class Guardian implements GuardianApi {
         throw new GuardianError('SESSION_REVOKED');
       }
       const call = parseToolCall(tool, args);
+      attempted = call;
       if (!call) {
         const code = ToolName.safeParse(tool).success ? 'INVALID_ARGUMENTS' : 'UNKNOWN_ACTION';
         this.ledger.recordDenied(agentId, code);
@@ -77,7 +100,11 @@ export class Guardian implements GuardianApi {
         if (error instanceof GuardianError) code = DenyCode.parse(error.code);
       } catch { /* Keep the safe internal-failure code. */ }
       if (code === 'INTERNAL_UNAVAILABLE') {
-        try { this.ledger.recordDenied(this.agentId, code); }
+        // Not kordn's own refusal: the bank failed or took too long. The owner gets to see why.
+        let detail: AuditEvent['metadata'] = {};
+        try { if (!(error instanceof GuardianError) || error instanceof NoAnswer) detail = bankDetail(error); }
+        catch { /* Same hostile values as above. */ }
+        try { this.ledger.recordDenied(this.agentId, code, attempted, detail); }
         catch { /* Storage failure still denies the action. */ }
       }
       return { ok: false, error: { code, message: code } };
@@ -102,13 +129,18 @@ export class Guardian implements GuardianApi {
   private async run(id: string) {
     const reservation = this.ledger.dispatch(id);
     let result: AdapterResult;
+    let detail: AuditEvent['metadata'] = {};
     try { result = this.outcome(await this.deadline(() => this.adapter.execute(id, reservation.call))); }
-    catch { result = { state: 'unknown', correlationId: id }; }
+    catch (error) {
+      result = { state: 'unknown', correlationId: id };
+      detail = bankDetail(error);
+    }
+    if (result.state === 'failed') detail = bankDetail(result.reasonCode);
     const current = this.ledger.get(id)!;
     if (current.state === 'SUCCEEDED' || current.state === 'FAILED') return this.transferOutput(current);
     if (current.state === 'UNKNOWN' && result.state === 'unknown') return this.transferOutput(current);
     const r = this.ledger.transition(id, result.state === 'succeeded' ? 'SUCCEEDED' : result.state === 'failed' ? 'FAILED' : 'UNKNOWN',
-      result.state === 'failed' ? 'ADAPTER_FAILED' : null);
+      result.state === 'failed' ? 'ADAPTER_FAILED' : null, undefined, detail);
     return this.transferOutput(r);
   }
 
@@ -128,7 +160,7 @@ export class Guardian implements GuardianApi {
       }
       if (this.ledger.get(r.id)?.state !== 'UNKNOWN') continue;
       this.ledger.transition(r.id, result.state === 'succeeded' ? 'SUCCEEDED' : 'FAILED',
-        result.state === 'failed' ? 'ADAPTER_FAILED' : null, 'transfer.reconciled');
+        result.state === 'failed' ? 'ADAPTER_FAILED' : null, 'transfer.reconciled', result.state === 'failed' ? bankDetail(result.reasonCode) : {});
     }
     this.expirePending();
   }
@@ -148,7 +180,7 @@ export class Guardian implements GuardianApi {
       if (result.state === 'unknown' || (result.state === 'failed' && result.reasonCode === 'NOT_EXECUTED')) continue;
       try {
         this.ledger.transition(r.id, result.state === 'succeeded' ? 'SUCCEEDED' : 'FAILED',
-          result.state === 'failed' ? 'ADAPTER_FAILED' : null, 'transfer.reconciled');
+          result.state === 'failed' ? 'ADAPTER_FAILED' : null, 'transfer.reconciled', result.state === 'failed' ? bankDetail(result.reasonCode) : {});
       } catch { /* Settled meanwhile by another refresh. */ }
     }
   }
