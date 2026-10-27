@@ -31,7 +31,7 @@ const tempDir = () => mkdtempSync(join(tmpdir(), 'kordn-cli-'));
 
 async function stdioClient(args: string[] = [], versionNegotiation?: { mode: { pin: '2026-07-28' } }, state = tempDir()) {
   const client = new Client({ name: 'test', version: '0.0.0' }, versionNegotiation ? { versionNegotiation } : {});
-  await client.connect(new StdioClientTransport({ command: process.execPath, args: [cli, ...args], cwd: tempDir(), env: { PATH: process.env.PATH ?? '', XDG_STATE_HOME: state }, stderr: 'pipe' }));
+  await client.connect(new StdioClientTransport({ command: process.execPath, args: [cli, ...args], cwd: tempDir(), env: { PATH: process.env.PATH ?? '', XDG_STATE_HOME: state, XDG_CONFIG_HOME: tempDir() }, stderr: 'pipe' }));
   cleanup.push(() => client.close());
   return client;
 }
@@ -43,7 +43,7 @@ const DEADLINE_MS = 3000;
 /** Run the CLI to exit, killing it at the deadline. Resolves with its code and output. */
 function run(args: string[], env: Record<string, string> = {}): Promise<{ code: number | null; stdout: string; stderr: string }> {
   return new Promise((done) => {
-    const child = spawn(process.execPath, [cli, ...args], { env: { PATH: process.env.PATH ?? '', XDG_STATE_HOME: tempDir(), ...env }, stdio: ['ignore', 'pipe', 'pipe'] });
+    const child = spawn(process.execPath, [cli, ...args], { env: { PATH: process.env.PATH ?? '', XDG_STATE_HOME: tempDir(), XDG_CONFIG_HOME: tempDir(), ...env }, stdio: ['ignore', 'pipe', 'pipe'] });
     const timer = setTimeout(() => child.kill('SIGKILL'), DEADLINE_MS);
     cleanup.push(() => child.kill('SIGKILL'));
     let stdout = '';
@@ -189,7 +189,7 @@ describe('kordn CLI', () => {
   it('serves --http with the token', async () => {
     const token = 'cli-token-0123456789abcdef0123456789';
     const child = spawn(process.execPath, [cli, '--http', '--port', '0'], {
-      env: { PATH: process.env.PATH ?? '', XDG_STATE_HOME: tempDir(), KORDN_TOKEN: token },
+      env: { PATH: process.env.PATH ?? '', XDG_STATE_HOME: tempDir(), XDG_CONFIG_HOME: tempDir(), KORDN_TOKEN: token },
       stdio: ['ignore', 'pipe', 'pipe'],
     });
     cleanup.push(() => child.kill('SIGKILL'));
@@ -253,7 +253,7 @@ interface Spawned {
 }
 
 function spawnCli(args: string[], env: Record<string, string>, stdin: 'pipe' | 'ignore' = 'ignore'): Spawned {
-  const child = spawn(process.execPath, [cli, ...args], { env: { PATH: process.env.PATH ?? '', XDG_STATE_HOME: tempDir(), ...env }, stdio: [stdin, 'pipe', 'pipe'] });
+  const child = spawn(process.execPath, [cli, ...args], { env: { PATH: process.env.PATH ?? '', XDG_STATE_HOME: tempDir(), XDG_CONFIG_HOME: tempDir(), ...env }, stdio: [stdin, 'pipe', 'pipe'] });
   cleanup.push(() => child.kill('SIGKILL'));
   let stdout = '';
   let stderr = '';
@@ -350,7 +350,7 @@ describe('--admin', () => {
       command: process.execPath,
       args: [cli, '--admin'],
       cwd: tempDir(),
-      env: { PATH: process.env.PATH ?? '', XDG_STATE_HOME: tempDir(), XDG_RUNTIME_DIR: runtime.dir },
+      env: { PATH: process.env.PATH ?? '', XDG_STATE_HOME: tempDir(), XDG_CONFIG_HOME: tempDir(), XDG_RUNTIME_DIR: runtime.dir },
       stderr: 'pipe',
     });
     await client.connect(transport);
@@ -419,7 +419,7 @@ describe.runIf(process.platform === 'linux')('kordn contain (fake docker)', () =
     const log = join(tempDir(), 'docker.log');
     const env = {
       PATH: `${bin}:${process.env.PATH ?? ''}`,
-      XDG_STATE_HOME: tempDir(),
+      XDG_STATE_HOME: tempDir(), XDG_CONFIG_HOME: tempDir(),
       TMPDIR: tmp,
       XDG_RUNTIME_DIR: runtime.dir,
       FAKE_DOCKER_LOG: log,
@@ -456,7 +456,7 @@ describe.runIf(process.platform === 'linux')('kordn contain (fake docker)', () =
     // kordn contain >file 2>&1
     const file = join(tempDir(), 'out.txt');
     const fd = openSync(file, 'w');
-    const child = spawn(process.execPath, [cli, 'contain'], { env: { PATH: process.env.PATH ?? '', XDG_STATE_HOME: tempDir(), ...fake.env }, stdio: ['ignore', fd, fd] });
+    const child = spawn(process.execPath, [cli, 'contain'], { env: { PATH: process.env.PATH ?? '', XDG_STATE_HOME: tempDir(), XDG_CONFIG_HOME: tempDir(), ...fake.env }, stdio: ['ignore', fd, fd] });
     closeSync(fd);
     cleanup.push(() => child.kill('SIGKILL'));
     expect(await new Promise((done) => child.on('close', done))).toBe(0);
@@ -642,6 +642,78 @@ describe.runIf(process.platform === 'linux')('kordn contain (fake docker)', () =
     expect(code).toBe(1);
     expect(stderr).toMatch(/^kordn: .*docker/i);
     expect(stderr).not.toMatch(/\n\s+at /);
+  });
+});
+
+describe('kordn setup', () => {
+  /** Runs setup with these answers on stdin, one per line. */
+  function setup(answers: string[], config: string, state: string) {
+    return new Promise<{ code: number | null; stdout: string }>((done) => {
+      const child = spawn(process.execPath, [cli, 'setup'], { env: { PATH: process.env.PATH ?? '', XDG_CONFIG_HOME: config, XDG_STATE_HOME: state }, stdio: ['pipe', 'pipe', 'pipe'] });
+      cleanup.push(() => child.kill('SIGKILL'));
+      let stdout = '';
+      child.stdout.on('data', (d) => (stdout += d));
+      child.on('close', (code) => done({ code, stdout }));
+      child.stdin.end(`${answers.join('\n')}\n`);
+    });
+  }
+
+  async function client(config: string, state: string, args: string[] = [], env: Record<string, string> = {}) {
+    const c = new Client({ name: 'test', version: '0.0.0' });
+    await c.connect(new StdioClientTransport({ command: process.execPath, args: [cli, ...args], cwd: tempDir(), env: { PATH: process.env.PATH ?? '', XDG_CONFIG_HOME: config, XDG_STATE_HOME: state, ...env }, stderr: 'pipe' }));
+    cleanup.push(() => c.close());
+    return c;
+  }
+
+  const transfer = (resourceId: string, payeeId: string, amountMinor: number, key: string) =>
+    ({ name: 'af_propose_transfer', arguments: { resourceId, payeeId, amountMinor, currency: 'USD', idempotencyKey: key } });
+
+  it('saves the mock bank with your limits, and a plain kordn enforces them', async () => {
+    const [config, state] = [tempDir(), tempDir()];
+    // A bad amount and a single over the daily total are asked again.
+    const { code, stdout } = await setup(['', 'ten', '50', '40', '50', '200', '2', '30'], config, state);
+    expect(code).toBe(0);
+    expect(stdout).toContain('Enter an amount like 100');
+    expect(stdout).toContain("One payment can't be more than the daily total");
+    const dir = join(config, 'kordn');
+    expect(statSync(dir).mode & 0o777).toBe(0o700);
+    expect(statSync(join(dir, 'policy.json')).mode & 0o777).toBe(0o600);
+    expect(existsSync(join(dir, 'bank.json'))).toBe(false);
+
+    const c = await client(config, state);
+    const id = 'mock-bank:checking-01';
+    expect((await c.callTool(transfer(id, 'utilities', 5_001, 'setup-key-01'))).structuredContent).toEqual({ error: { code: 'SINGLE_LIMIT' } });
+    expect((await c.callTool(transfer(id, 'utilities', 3_001, 'setup-key-02'))).structuredContent).toMatchObject({ state: 'pending_approval' });
+    expect((await c.callTool(transfer(id, 'landlord', 1_000, 'setup-key-03'))).structuredContent).toMatchObject({ state: 'succeeded' });
+  });
+
+  it('saves PayPal payees and keys privately, and kordn uses them without the environment', async () => {
+    const [config, state] = [tempDir(), tempDir()];
+    const answers = ['2', 'client-id-1', 'secret-1', 'Bad Name', 'landlord', 'not-an-email', 'me@personal.example.com', '', '', '', '', '', 'n'];
+    const { code, stdout } = await setup(answers, config, state);
+    expect(code).toBe(0);
+    expect(stdout).toContain('Use lowercase letters');
+    expect(stdout).toContain("doesn't look like their PayPal email");
+    expect(stdout).not.toContain('secret-1');
+    const dir = join(config, 'kordn');
+    expect(JSON.parse(readFileSync(join(dir, 'bank.json'), 'utf8'))).toEqual({ provider: 'paypal', payees: { landlord: 'me@personal.example.com' } });
+    expect(readFileSync(join(dir, 'keys.env'), 'utf8')).toBe('PAYPAL_CLIENT_ID=client-id-1\nPAYPAL_CLIENT_SECRET=secret-1\n');
+    for (const name of ['policy.json', 'bank.json', 'keys.env']) expect(statSync(join(dir, name)).mode & 0o777).toBe(0o600);
+
+    // Without the saved keys openBank would refuse to start; listing tools needs no network.
+    const { tools } = await (await client(config, state)).listTools();
+    expect(tools[0]!.description).toContain('resourceId is "paypal:main"');
+
+    // Back to the mock bank: the PayPal files go.
+    expect((await setup(['1', '', '', '', ''], config, state)).code).toBe(0);
+    expect(existsSync(join(dir, 'bank.json')) || existsSync(join(dir, 'keys.env'))).toBe(false);
+  });
+
+  it('is ignored when --policy is given', async () => {
+    const [config, state] = [tempDir(), tempDir()];
+    expect((await setup(['2', 'c', 's', 'landlord', 'me@personal.example.com', '', '', '', '', '', 'n'], config, state)).code).toBe(0);
+    const c = await client(config, state, ['--policy', join(root, 'examples', 'policy.json')]);
+    expect((await c.callTool(balance)).structuredContent).toMatchObject({ currency: 'USD' });
   });
 });
 

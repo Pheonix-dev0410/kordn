@@ -84,6 +84,7 @@ T-numbers are the design doc's §11.1 cases in `test/matrix.test.ts`. Sandbox ro
 - Registration is rate-limited globally (10 a minute), so someone flooding `/register` can delay a new app's registration. Apps already registered are unaffected.
 - A quick-tunnel URL changes on every restart, and that disconnects every app: each has to be added again. kordn drops the apps registered under any other URL when it starts, and approved apps unused for 30 days, so stale approvals don't hold places among the 20.
 - Without `KORDN_TOKEN`, `--http` makes a 64-character token, keeps it in `<data>/http-token` (0600, in the 0700 data dir) and prints it on stderr at every start. Anyone who can read that file or your terminal can call kordn and approve apps.
+- `kordn setup` saves provider keys in plain text in `~/.config/kordn/keys.env` (0600, in a 0700 directory). Anyone who can read your files as you can use them. Keys in the environment take precedence, for those who'd rather keep them in a password manager.
 - A tunnel's provider terminates TLS, so it sees the traffic, tokens included. `--tunnel` uses a Cloudflare quick tunnel, which also has no uptime guarantee. For anything beyond trying kordn out, use a tunnel you trust with `--public-url`.
 
 ## Not logged

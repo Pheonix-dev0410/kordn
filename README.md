@@ -27,6 +27,8 @@ You can let an AI assistant like ChatGPT, Claude or Cursor check your balance an
 
 You need [Node.js](https://nodejs.org) 24 or newer.
 
+**1. Install**
+
 ```sh
 git clone https://github.com/Pheonix-dev0410/kordn.git
 cd kordn
@@ -35,13 +37,27 @@ npm run build
 npm link        # adds the `kordn` command
 ```
 
-**See it work.** A scripted "agent" tries the worst it can, like paying an attacker or splitting a big payment into small ones, and kordn blocks it:
+**2. See it work.** A scripted "agent" tries the worst it can, like paying an attacker or splitting a big payment into small ones, and kordn blocks it:
 
 ```sh
 npm run demo
 ```
 
-Out of the box, kordn guards a **built-in mock bank** with pretend money. Nothing real is touched.
+**3. Choose what kordn guards**
+
+```sh
+kordn setup
+```
+
+It asks a few questions and checks your keys:
+- **which account:** the built-in mock bank with pretend money, your PayPal sandbox, or your Stripe test account
+- **your API keys**, for PayPal or Stripe
+- **who the AI may pay**
+- **your limits**, in dollars
+
+Everything is saved privately in `~/.config/kordn`. Skip this step and kordn guards the mock bank with the example rules.
+
+**4. Connect your AI app**, below.
 
 ## Connect your AI app
 
@@ -135,7 +151,7 @@ For an app in the cloud, put kordn behind a tunnel and tell kordn the tunnel's h
 
 ## Set your rules
 
-Your rules live in a policy file. The example, `examples/policy.json`, allows this:
+The easiest way is `kordn setup`, or the **Policy** page on the admin page. Behind both is a policy file. The example, `examples/policy.json`, allows this:
 
 ```jsonc
 "transfers": {
@@ -149,7 +165,7 @@ Your rules live in a policy file. The example, `examples/policy.json`, allows th
 
 Anything not allowed is denied.
 
-- kordn reads `examples/policy.json` only on the first run and keeps its own copy after that. Change the rules on the admin page, or start kordn with `--policy my-policy.json` to replace them.
+- kordn keeps its own copy of the rules, so changes on the admin page survive restarts. Running `kordn setup` again, or starting with `--policy my-policy.json`, replaces them.
 - kordn keeps everything (the rules, the payment ledger, the log and the mock bank) in `~/.local/state/kordn`. To start completely fresh, delete that folder. `--data <folder>` uses a different one.
 
 ## The approval page
@@ -171,7 +187,7 @@ Pressing **Stop** is permanent for that agent. To start over, delete the data fo
 
 ## Use a real PayPal or Stripe account
 
-kordn can guard your own PayPal or Stripe account in test mode, instead of the mock bank. See [docs/providers.md](docs/providers.md).
+Run `kordn setup` and choose PayPal or Stripe. It asks for your test keys and checks them. [docs/providers.md](docs/providers.md) shows where to get the keys, and how PayPal and Stripe behave.
 
 ## What the AI can do
 
@@ -209,6 +225,7 @@ Before the agent starts, kordn runs 14 isolation checks and prints which passed.
 
 | Option | What it does |
 |---|---|
+| `kordn setup` | Choose the account, keys, payees and limits |
 | `--admin` | Start the approval page |
 | `--http` | Serve over HTTP at `127.0.0.1:3333/mcp`, instead of being started by the app |
 | `--tunnel` | Get a free public address from Cloudflare (with `--http`) |
