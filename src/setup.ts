@@ -164,8 +164,9 @@ export async function runSetup(options: { data?: string }, env: NodeJS.ProcessEn
       say('\nThe mock bank knows two payees: utilities and landlord. The AI may pay both.');
       payees = { utilities: '', landlord: '' };
     } else {
-      say(`\nWho may the AI pay? For each one, a short name the AI will use (like landlord) and ${info.payeeLabel}.`);
-      say('Leave the name empty when you are done.');
+      say('\nWho may the AI pay? Nobody else can be paid, whatever the AI is told.');
+      say(`Add each person: a nickname the AI will use, like landlord, and ${info.payeeLabel}, where the money goes.`);
+      say('Press Enter on an empty name when you are done.');
       for (;;) {
         const name = (await p.ask('  Name: ')).toLowerCase();
         if (!name) {
@@ -188,33 +189,8 @@ export async function runSetup(options: { data?: string }, env: NodeJS.ProcessEn
 
     // Plaid can't pay, so its payment limits are only placeholders: transfers stay off.
     const readOnly = provider === 'plaid';
-    if (!readOnly) say('\nLimits. Amounts in dollars.');
-    const dollars = async (question: string, fallback: number) => {
-      for (;;) {
-        const answer = (await p.ask(`  ${question} [${fallback}]: `)).replace(/^\$/, '');
-        if (!answer) return fallback * 100;
-        const cents = /^\d+(\.\d{1,2})?$/.test(answer) ? Math.round(Number(answer) * 100) : NaN;
-        if (AmountMinor.safeParse(cents).success) return cents;
-        say('  Enter an amount like 100 or 49.99.');
-      }
-    };
-    const count = async (question: string, fallback: number) => {
-      for (;;) {
-        const answer = await p.ask(`  ${question} [${fallback}]: `);
-        if (!answer) return fallback;
-        if (/^\d{1,4}$/.test(answer)) return Number(answer);
-        say('  Enter a whole number.');
-      }
-    };
-    let single = readOnly ? 10_000 : await dollars('Most for one payment', 100);
-    let daily = readOnly ? 25_000 : await dollars('Most per day, all payments together', 250);
-    while (single > daily) {
-      say('  One payment can\'t be more than the daily total.');
-      single = await dollars('Most for one payment', 100);
-      daily = await dollars('Most per day, all payments together', 250);
-    }
-    const calls = readOnly ? 0 : await count('Most payments per day', 3);
-    const approval = readOnly ? 0 : await dollars('Ask me first for payments over', 75);
+    const limits = readOnly ? { daily: 25_000, single: 10_000, calls: 0, approval: 0 } : await askLimits(p, say);
+    const { daily, single, calls, approval } = limits;
 
     const policy = Policy.parse({
       schemaVersion: 1,
@@ -314,4 +290,52 @@ async function connectPlaid(p: Prompter, say: (text?: string) => void, keys: Pla
   const balance = account.balanceMinor === null ? '' : `. Balance: $${(account.balanceMinor / 100).toFixed(2)}`;
   say(`  Connected ${account.label}${balance}`);
   return { accountId: account.id, accessToken };
+}
+
+const usd = (minor: number) => `$${(minor / 100).toFixed(minor % 100 ? 2 : 0)}`;
+
+/** The suggested limits in one yes/no, or each one asked in plain words, the daily total first. */
+async function askLimits(p: Prompter, say: (text?: string) => void) {
+  const describe = (l: { daily: number; single: number; calls: number; approval: number }) => [
+    `  - at most ${usd(l.daily)} a day in total`,
+    `  - at most ${usd(l.single)} for any one payment`,
+    `  - at most ${l.calls} payment${l.calls === 1 ? '' : 's'} a day`,
+    `  - payments over ${usd(l.approval)} wait until you approve them on the dashboard`,
+  ];
+  const suggested = { daily: 25_000, single: 10_000, calls: 3, approval: 7_500 };
+  say('\nHow much may the AI spend? Suggested:');
+  for (const line of describe(suggested)) say(line);
+  const later = 'You can change them any time on the dashboard, under Limits.';
+  if ((await p.ask('Use these? [Y/n]: ')).toLowerCase() !== 'n') {
+    say(later);
+    return suggested;
+  }
+
+  const dollars = async (question: string, fallback: number, max = Infinity) => {
+    for (;;) {
+      const answer = (await p.ask(`  ${question} [${usd(fallback)}]: `)).replace(/^\$/, '');
+      const cents = !answer ? fallback : /^\d+(\.\d{1,2})?$/.test(answer) ? Math.round(Number(answer) * 100) : NaN;
+      if (!AmountMinor.safeParse(cents).success) say('  Enter an amount like 100 or 49.99.');
+      else if (cents > max) say(`  That's more than your daily total of ${usd(max)}. Enter ${usd(max)} or less.`);
+      else return cents;
+    }
+  };
+  const count = async (question: string, fallback: number) => {
+    for (;;) {
+      const answer = await p.ask(`  ${question} [${fallback}]: `);
+      if (!answer) return fallback;
+      if (/^\d{1,4}$/.test(answer)) return Number(answer);
+      say('  Enter a whole number, like 3.');
+    }
+  };
+  say('\nPress Enter to keep a suggestion.');
+  const daily = await dollars('How much may the AI spend in a day, in total?', suggested.daily);
+  const single = await dollars('The most for any one payment?', Math.min(suggested.single, daily), daily);
+  const calls = await count('How many payments a day, at most?', suggested.calls);
+  const approval = await dollars('Ask you first for payments over how much?', Math.min(suggested.approval, single));
+  const chosen = { daily, single, calls, approval };
+  say('\nYour limits:');
+  for (const line of describe(chosen)) say(line);
+  say(later);
+  return chosen;
 }

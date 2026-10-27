@@ -670,11 +670,12 @@ describe('kordn setup', () => {
 
   it('saves the mock bank with your limits, and a plain kordn enforces them', async () => {
     const [config, state] = [tempDir(), tempDir()];
-    // A bad amount and a single over the daily total are asked again.
-    const { code, stdout } = await setup(['', 'ten', '50', '40', '50', '200', '2', '30'], config, state);
+    // Own limits instead of the suggested ones; a bad amount and a payment over the daily total are asked again.
+    const { code, stdout } = await setup(['', 'n', '200', 'ten', '500', '50', '2', '30'], config, state);
     expect(code).toBe(0);
     expect(stdout).toContain('Enter an amount like 100');
-    expect(stdout).toContain("One payment can't be more than the daily total");
+    expect(stdout).toContain("That's more than your daily total of $200. Enter $200 or less.");
+    expect(stdout).toContain('Your limits:\n  - at most $200 a day in total\n  - at most $50 for any one payment\n  - at most 2 payments a day\n  - payments over $30 wait');
     const dir = join(config, 'kordn');
     expect(statSync(dir).mode & 0o777).toBe(0o700);
     expect(statSync(join(dir, 'policy.json')).mode & 0o777).toBe(0o600);
@@ -689,9 +690,10 @@ describe('kordn setup', () => {
 
   it('saves PayPal payees and keys privately, and kordn uses them without the environment', async () => {
     const [config, state] = [tempDir(), tempDir()];
-    const answers = ['2', 'client-id-1', 'secret-1', 'Bad Name', 'landlord', 'not-an-email', 'me@personal.example.com', '', '', '', '', '', 'n'];
+    const answers = ['2', 'client-id-1', 'secret-1', 'Bad Name', 'landlord', 'not-an-email', 'me@personal.example.com', '', '', 'n'];
     const { code, stdout } = await setup(answers, config, state);
     expect(code).toBe(0);
+    expect(stdout).toContain('Suggested:\n  - at most $250 a day in total\n  - at most $100 for any one payment\n  - at most 3 payments a day\n  - payments over $75 wait');
     expect(stdout).toContain('Use lowercase letters');
     expect(stdout).toContain("doesn't look like their PayPal email");
     expect(stdout).not.toContain('secret-1');
@@ -705,13 +707,13 @@ describe('kordn setup', () => {
     expect(tools[0]!.description).toContain('resourceId is "paypal:main"');
 
     // Back to the mock bank: the PayPal files go.
-    expect((await setup(['1', '', '', '', ''], config, state)).code).toBe(0);
+    expect((await setup(['1', ''], config, state)).code).toBe(0);
     expect(existsSync(join(dir, 'bank.json')) || existsSync(join(dir, 'keys.env'))).toBe(false);
   });
 
   it('is ignored when --policy is given', async () => {
     const [config, state] = [tempDir(), tempDir()];
-    expect((await setup(['2', 'c', 's', 'landlord', 'me@personal.example.com', '', '', '', '', '', 'n'], config, state)).code).toBe(0);
+    expect((await setup(['2', 'c', 's', 'landlord', 'me@personal.example.com', '', '', 'n'], config, state)).code).toBe(0);
     const c = await client(config, state, ['--policy', join(root, 'examples', 'policy.json')]);
     expect((await c.callTool(balance)).structuredContent).toMatchObject({ currency: 'USD' });
   });
