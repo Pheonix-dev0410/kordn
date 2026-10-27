@@ -20,24 +20,36 @@ const DESCRIPTIONS: Record<ToolName, string> = {
   af_get_transfer_status: 'Check the state of a transfer by the transferRef that af_propose_transfer returned.',
 };
 
-/** Pinned manifest: names, descriptions and strict input schemas never change at runtime. */
-export const TOOLS: readonly Tool[] = Object.freeze(
-  TOOL_NAMES.map((name) => ({
-    name,
-    description: DESCRIPTIONS[name],
-    inputSchema: z.toJSONSchema(TOOL_INPUTS[name], { io: 'input' }) as Tool['inputSchema'],
-  })),
-);
+/**
+ * Pinned manifest: names, descriptions and strict input schemas never change while kordn runs.
+ * With the account's id, the descriptions name it, so the agent doesn't have to ask the user.
+ */
+export function toolManifest(resourceId?: string): readonly Tool[] {
+  const account = resourceId === undefined ? '' : ` The account's resourceId is "${resourceId}".`;
+  return Object.freeze(
+    TOOL_NAMES.map((name) => ({
+      name,
+      description: DESCRIPTIONS[name] + (name === 'af_get_transfer_status' ? '' : account),
+      inputSchema: z.toJSONSchema(TOOL_INPUTS[name], { io: 'input' }) as Tool['inputSchema'],
+    })),
+  );
+}
 
 export interface McpServerOptions {
   /** Chosen by the launcher. Never taken from the client. */
   agentId: string;
   handleCall: Guardian['handleCall'];
+  /** The policy's account, from the launcher. Unknown behind --guardian. */
+  resourceId?: string;
 }
 
-export function createMcpServer({ agentId, handleCall }: McpServerOptions): Server {
-  const server = new Server(SERVER_INFO, { capabilities: { tools: {} } });
-  server.setRequestHandler('tools/list', () => ({ tools: [...TOOLS] }));
+export function createMcpServer({ agentId, handleCall, resourceId }: McpServerOptions): Server {
+  const tools = toolManifest(resourceId);
+  const instructions = resourceId === undefined
+    ? undefined
+    : `kordn guards one bank account, resourceId "${resourceId}". Use it in every tool call; don't ask the user for it.`;
+  const server = new Server(SERVER_INFO, { capabilities: { tools: {} }, ...(instructions && { instructions }) });
+  server.setRequestHandler('tools/list', () => ({ tools: [...tools] }));
   server.fallbackRequestHandler = async (request) => {
     // Fixed message: the method name is agent-supplied.
     if (request.method !== 'tools/call') throw new ProtocolError(ProtocolErrorCode.MethodNotFound, 'Method not found');

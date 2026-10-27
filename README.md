@@ -95,6 +95,8 @@ kordn: OAuth on for https://….trycloudflare.com/mcp   ← your connector URL
 kordn: token 3f9a…                              ← your approval token
 ```
 
+Don't open the connector URL in your browser: you'll only see an `invalid_token` error, which is expected. It's meant for the app.
+
 **3. Add the connector URL in your app:**
 
 | App | Where | Notes |

@@ -360,6 +360,7 @@ async function serve(options: Options, env: NodeJS.ProcessEnv): Promise<void> {
   let agentId: string;
   let handleCall: Guardian['handleCall'];
   let guardian: Guardian | undefined;
+  let resourceId: string | undefined;
   if (options.guardian !== undefined) {
     agentId = SOCKET_BOUND_AGENT;
     handleCall = createGuardianClient(options.guardian);
@@ -369,6 +370,7 @@ async function serve(options: Options, env: NodeJS.ProcessEnv): Promise<void> {
     const local = (await openGuardian(options, policy)).guardian;
     guardian = local;
     agentId = policy.agentId;
+    resourceId = policy.resourceId;
     handleCall = (agent, tool, args) => local.handleCall(agent, tool, args);
   }
   // In Contain mode the guardian owns the data dir.
@@ -381,7 +383,7 @@ async function serve(options: Options, env: NodeJS.ProcessEnv): Promise<void> {
   if (options.http && (options.publicUrl || options.tunnel) && token.length < MIN_TOKEN_LENGTH) {
     throw new Error(`KORDN_TOKEN must be set to a random secret of at least ${MIN_TOKEN_LENGTH} characters`);
   }
-  const factory = () => createMcpServer({ agentId, handleCall });
+  const factory = () => createMcpServer({ agentId, handleCall, resourceId });
 
   // Installed before anything starts, so a signal during startup still shuts down what's up.
   const closers: (() => Promise<void>)[] = [];
