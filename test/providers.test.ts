@@ -364,9 +364,18 @@ describe('Plaid', () => {
     expect(polls).toBe(3);
   });
 
-  it('stops waiting when the user closes the page without connecting', async () => {
-    const provider = fakeProvider(() => ({ status: 200, json: { link_sessions: [{ finished_at: 'now', results: { item_add_results: [] } }] } }));
-    await expect(waitForItem({ ...keys, fetch: provider.fetch }, 'link-sandbox-1', { intervalMs: 1 })).rejects.toThrow(/closed without connecting/);
+  it('keeps waiting after a session ends without a bank, and says so once per session', async () => {
+    const ended = { finished_at: 'then', results: { item_add_results: [] } };
+    const replies = [[ended], [ended], [ended, { finished_at: null }], [ended, { finished_at: 'now', results: { item_add_results: [{ public_token: 'public-sandbox-3' }] } }]];
+    let polls = 0;
+    const provider = fakeProvider((req) =>
+      req.url.pathname === '/link/token/get' ? { status: 200, json: { link_sessions: replies[Math.min(polls++, replies.length - 1)] } } : { status: 200, json: { access_token: 'access-sandbox-3' } },
+    );
+    let notices = 0;
+    const k = { ...keys, fetch: provider.fetch };
+    expect(await waitForItem(k, 'link-sandbox-1', { intervalMs: 1, onSessionEnded: () => notices++ })).toBe('access-sandbox-3');
+    expect(notices).toBe(1);
+    await expect(waitForItem({ ...keys, fetch: fakeProvider(() => ({ status: 200, json: { link_sessions: [ended] } })).fetch }, 'link-sandbox-1', { intervalMs: 1, timeoutMs: 20 })).rejects.toThrow(/timed out/);
   });
 
   it('offers only checking and savings accounts in USD', async () => {
