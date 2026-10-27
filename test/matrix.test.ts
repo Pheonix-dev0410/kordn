@@ -6,7 +6,7 @@ import { Policy } from '../src/schema.js';
 import { login } from './admin-helpers.js';
 import { harness, transfer } from './helpers.js';
 
-// The required cases T01-T20 from the design doc (§11.1), one test each, against the real
+// The required cases T01-T20, one test each, against the real
 // guardian, ledger and mock bank. T17 and T18 need the sandbox: see test/attacks.test.ts.
 
 type Harness = ReturnType<typeof harness>;
@@ -32,7 +32,7 @@ const bank = () =>
   h.bank.db.prepare('SELECT COUNT(*) AS n, COALESCE(SUM(amount_minor), 0) AS total FROM bank_transfers').get() as { n: number; total: number };
 const HOUR = 3_600_000;
 
-describe('design doc §11.1 test matrix', () => {
+describe('test matrix T01-T20', () => {
   it('T01: one permitted read returns at most 20 rows; a lookback over 30 days is denied', async () => {
     h = harness();
     const ok = await call('af_list_transactions', { resourceId: h.policy.resourceId, fromDate: '2026-09-26', limit: 20 });

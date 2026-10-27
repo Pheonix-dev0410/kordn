@@ -6,7 +6,7 @@ import { expect, it } from 'vitest';
 
 const root = resolve(import.meta.dirname, '..');
 
-it('runs every demo scene and shows the outcomes the design doc asks for', () => {
+it('runs every demo scene and shows the expected outcomes', () => {
   execFileSync('npm', ['run', 'build', '--silent'], { cwd: root, stdio: 'pipe' });
   const output = execFileSync(process.execPath, ['--disable-warning=ExperimentalWarning', join(root, 'dist', 'demo.js')], {
     encoding: 'utf8',

@@ -1,4 +1,4 @@
-# kordn Contain-mode sandbox image. Design doc §9.1-9.2, docs/contain.md.
+# kordn Contain-mode sandbox image.
 # Build from the repo root:  docker build -f sandbox/Dockerfile -t kordn-sandbox .
 # The build context is filtered by sandbox/Dockerfile.dockerignore (allowlist).
 

@@ -190,7 +190,7 @@ Anything not allowed is denied.
 
 Add `--admin` to any kordn command to get a private dashboard in your browser, on your computer only.
 
-![The kordn dashboard: agent status, balance, usage against limits, recent payments and activity](docs/dashboard.png)
+![The kordn dashboard: agent status, balance, usage against limits, recent payments and activity](.github/dashboard.png)
 
 | Page | What it's for |
 |---|---|
@@ -216,7 +216,17 @@ Run `kordn setup` and choose:
 - **PayPal or Stripe** to let the AI pay. Choose **Test** (pretend money) or **Live** (your real account). It asks for your keys and checks them.
 - **Plaid** to let the AI read a bank account: the balance and statements, never payments. You sign in to your bank on Plaid's page, never in kordn or the AI. Plaid's sandbox comes with a test bank that has a planted prompt injection in its statement, so you can watch kordn flag it.
 
-[docs/providers.md](docs/providers.md) shows where to get the keys, and how each one behaves.
+**Where to get the keys**
+
+- **PayPal:** on [developer.paypal.com](https://developer.paypal.com), create an app under Apps & Credentials (Sandbox or Live), copy its Client ID and Secret, and turn on **Transaction search**. For test payments, use a **US** sandbox business account. Payouts need a Business account in a country where PayPal allows them, which excludes India.
+- **Stripe:** a key (`sk_test_…`, or `rk_live_…` for real money) that can create transfers and read your balance, and a connected account (`acct_…`) for each payee.
+- **Plaid:** sign up free at [dashboard.plaid.com](https://dashboard.plaid.com) and copy the `client_id` and the **Sandbox** secret under Developers → Keys. In the sandbox, setup can make a test bank for you, or you sign in on Plaid's page with `user_good` / `pass_good`. Real banks need Plaid's production access.
+
+**Good to know**
+
+- A PayPal payout often stays "processing" for a while. kordn counts it against your limits until PayPal says it went through or failed.
+- When the bank refuses a call, the AI only gets a short code. The dashboard's **Activity** page shows you what the bank said, like `paypal:NOT_FOUND`.
+- Setup saves your keys in `~/.config/kordn/keys.env`, readable only by you. Keys set in the environment take precedence.
 
 **Real money.** Choosing Live asks you to type `real money` to confirm, then suggests small limits: $10 per payment, $20 a day, and every payment waits for your approval on the dashboard. kordn says LIVE when it starts, and the dashboard shows it on every page. You can raise the limits later, under Limits.
 
@@ -236,7 +246,7 @@ kordn gives the AI exactly four tools, and nothing else:
 kordn has two modes:
 
 - **Guard** (the default). Every payment goes through kordn's checks. But if the AI app has other powers too, like a browser or a shell, it could reach your bank another way. Make kordn its only way to your money.
-- **Contain** (Linux with Docker). The AI runs in a sealed sandbox with no network, and kordn is its only way out. The security claims in [docs/threat-model.md](docs/threat-model.md) apply to this mode. See [docs/contain.md](docs/contain.md).
+- **Contain** (Linux with rootless Docker). The AI runs in a sealed sandbox with no network, and kordn is its only way out.
 
 <details>
 <summary>Run the demo agent in Contain mode</summary>
@@ -249,6 +259,11 @@ kordn contain --admin
 Before the agent starts, kordn runs 14 isolation checks and prints which passed. Only if all of them pass is it Contain. Otherwise the agent still runs, labelled Guard, and `--require-contain` refuses instead. On a normal (rootful) Docker install the result is Guard, and that's correct.
 
 </details>
+
+What kordn doesn't do:
+- It doesn't stop prompt injection in general. It limits what a tricked AI can *do* with your money.
+- A tunnel provider (Cloudflare, ngrok) sees the traffic, tokens included. Use one you trust.
+- Your provider key itself can do anything its permissions allow. Keep it away from the AI, and use a restricted key where you can.
 
 ## All options
 
@@ -265,7 +280,7 @@ Before the agent starts, kordn runs 14 isolation checks and prints which passed.
 | `--port <n>` | HTTP port (default 3333) |
 | `--policy <file>` | Replace the stored rules with this file |
 | `--data <folder>` | Where kordn keeps its data (default `~/.local/state/kordn`) |
-| `--bank <file>` | Guard a PayPal, Stripe or Plaid account ([docs/providers.md](docs/providers.md)) |
+| `--bank <file>` | Guard a PayPal, Stripe or Plaid account from a file, instead of `kordn setup` |
 
 ## Development
 
@@ -283,7 +298,6 @@ npm run test:concurrency                          # 50 rounds of concurrency and
 | `test/` | Tests |
 | `examples/` | Example rules and bank files |
 | `sandbox/` | The Contain image and the demo agent |
-| `docs/` | Threat model, Contain mode, providers and the design doc |
 
 Make a branch for each issue, open a pull request into `main`, and link the issue. Report security problems privately through GitHub's security advisories, not in issues.
 

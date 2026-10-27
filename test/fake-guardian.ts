@@ -72,7 +72,7 @@ export function createFakeGuardian(options: FakeGuardianOptions): Guardian {
   let version = 1;
   const revoked = new Set<string>();
   const transfers = new Map<string, Transfer>();
-  // Design doc §8.4: an idempotency key is scoped to (agent, key). Only reserved transfers are
+  // An idempotency key is scoped to (agent, key). Only reserved transfers are
   // recorded, so a denied request can be retried once the policy allows it.
   const byIdempotencyKey = new Map<string, Transfer>();
   const activity: AuditEvent[] = [];
