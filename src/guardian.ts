@@ -1,6 +1,6 @@
 import { DenyCode, parseToolCall, Policy, ToolName, TOOL_OUTPUTS } from './schema.js';
 import type { AdapterResult, BankAdapter } from './schema.js';
-import type { ActivityFilter, ApprovalResult, CallResult, Guardian as GuardianApi, OAuthAuditEvent, PendingApproval, PolicyUpdateResult } from './guardian-api.js';
+import type { ActivityFilter, ApprovalResult, CallResult, Guardian as GuardianApi, OAuthAuditEvent, Overview, PendingApproval, PolicyUpdateResult, TransferSummary } from './guardian-api.js';
 import { ApprovalDecisionError, GuardianError, Ledger, PolicyVersionConflict } from './ledger.js';
 import type { Reservation } from './ledger.js';
 
@@ -226,6 +226,26 @@ export class Guardian implements GuardianApi {
       this.ledger.transaction(() => this.ledger.event(this.agentId, 'action.attempted', null, null, null, null, null,
         { reason: 'connection_limit', refused: count }));
     } catch { /* A failed audit writer cannot make the socket server accept the refused connection. */ }
+  }
+
+  async listTransfers(limit = 20): Promise<TransferSummary[]> {
+    if (!Number.isInteger(limit) || limit < 1) throw new RangeError('invalid transfer limit');
+    this.expirePending();
+    return this.ledger.list(this.agentId).reverse().slice(0, Math.min(limit, 500)).map((r) => ({
+      reservationId: r.id, payeeId: r.call.payeeId, amountMinor: r.call.amountMinor, currency: r.call.currency,
+      state: r.state, reasonCode: r.reasonCode, createdAt: new Date(r.createdMs).toISOString(), updatedAt: new Date(r.updatedMs).toISOString(),
+    }));
+  }
+
+  async getOverview(): Promise<Overview> {
+    this.expirePending();
+    const { policy } = this.ledger.getPolicy(this.agentId);
+    let balance: Overview['balance'] = null;
+    try {
+      const b = await this.deadline(() => this.adapter.getBalance(policy.resourceId));
+      balance = { balanceMinor: b.balanceMinor, currency: b.currency, observedAt: b.observedAt };
+    } catch { /* Shown as unavailable; the bank's error text stays out of the page. */ }
+    return { usage: this.ledger.currentUsage(this.agentId), balance };
   }
 
   async recordOAuthEvent(event: OAuthAuditEvent, app: { client: string; redirectHost: string }): Promise<void> {

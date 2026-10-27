@@ -327,7 +327,7 @@ describe('fake guardian: no live references out', () => {
 
     const [e] = await g.listActivity();
     e!.metadata.forged = true;
-    expect((await g.listActivity())[0]!.metadata).toEqual({});
+    expect((await g.listActivity())[0]!.metadata).toEqual({ payeeId: 'attacker', amountMinor: 100 });
   });
 
   it('does not keep a reference to the policy it was given', async () => {

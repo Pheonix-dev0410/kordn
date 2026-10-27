@@ -190,3 +190,41 @@ describe('guardian: recordOAuthEvent', () => {
     await expect(h.guardian.recordOAuthEvent('oauth.revoked', { client: 'c', redirectHost: 'h' })).resolves.toBeUndefined();
   });
 });
+
+describe('guardian: admin overview', () => {
+  it('lists transfers newest first and counts what holds budget', async () => {
+    h = harness();
+    await propose(h, 0, 1_000);
+    h.advance(1_000);
+    await propose(h, 1, 9_000);
+    const transfers = await h.guardian.listTransfers();
+    expect(transfers.map((t) => [t.amountMinor, t.state])).toEqual([[9_000, 'PENDING_APPROVAL'], [1_000, 'SUCCEEDED']]);
+    expect(transfers[0]).toMatchObject({ payeeId: 'utilities', currency: 'USD', reasonCode: null });
+    const overview = await h.guardian.getOverview();
+    expect(overview.usage).toMatchObject({ transfers: 2, transferredMinor: 10_000 });
+    expect(overview.balance?.balanceMinor).toBe(482_315 - 1_000);
+    await expect(h.guardian.listTransfers(0)).rejects.toThrow(RangeError);
+  });
+
+  it('reads the balance for the owner without logging an agent read', async () => {
+    h = harness();
+    const before = (await h.guardian.listActivity({ limit: 1000 })).length;
+    await h.guardian.getOverview();
+    expect((await h.guardian.listActivity({ limit: 1000 })).length).toBe(before);
+  });
+
+  it('shows no balance when the bank fails', async () => {
+    h = harness();
+    vi.spyOn(h.bank, 'getBalance').mockRejectedValue(new Error('bank down: <secret detail>'));
+    expect((await h.guardian.getOverview()).balance).toBeNull();
+  });
+
+  it('records the payee and amount of a refused transfer', async () => {
+    h = harness();
+    const { tool, ...args } = transfer(0, 100);
+    await h.guardian.handleCall(h.policy.agentId, tool, { ...args, payeeId: 'attacker-01' });
+    const [denied] = await h.guardian.listActivity({ events: ['policy.denied'] });
+    expect(denied).toMatchObject({ reasonCode: 'UNAPPROVED_PAYEE', metadata: { payeeId: 'attacker-01', amountMinor: 100 } });
+    expect(h.ledger.audit.verifyChain()).toBe(true);
+  });
+});

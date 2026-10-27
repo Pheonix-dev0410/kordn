@@ -101,6 +101,11 @@ export class Ledger {
     });
   }
 
+  /** What counts against the agent's limits right now. */
+  currentUsage(agentId: string): Usage {
+    return this.usage(agentId, this.getPolicy(agentId).policy, this.clock.nowMs());
+  }
+
   private usage(agentId: string, policy: Policy, nowMs: number, excludeId?: string): Usage {
     const reads = this.db.prepare("SELECT COUNT(*) AS count FROM usage_events WHERE agent_id=? AND created_ms>? AND tool!='af_get_transfer_status'")
       .get(agentId, nowMs - policy.reads.windowSec * 1000)!;
@@ -158,7 +163,9 @@ export class Ledger {
   }
 
   private denied(agentId: string, call: ToolCall | null, hash: string | null, version: number | null, code: DenyCode): GuardianError {
-    this.event(agentId, 'policy.denied', call, hash, version, code);
+    // Payee and amount of a refused transfer, so the owner sees what was attempted. Both are schema-checked.
+    const metadata: AuditEvent['metadata'] = call?.tool === 'af_propose_transfer' ? { payeeId: call.payeeId, amountMinor: call.amountMinor } : {};
+    this.event(agentId, 'policy.denied', call, hash, version, code, null, metadata);
     return new GuardianError(code);
   }
 

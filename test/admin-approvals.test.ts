@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it } from 'vitest';
 import type { AdminServer } from '../src/admin/server.js';
+import { ACTIVITY_DEFAULT } from '../src/admin/pages.js';
 import { createFakeGuardian } from './fake-guardian.js';
 import type { ActivityFilter, Guardian, PendingApproval } from '../src/guardian-api.js';
 import type { AuditEvent } from '../src/schema.js';
@@ -61,15 +62,19 @@ describe('admin approvals', () => {
     const s = await login(server);
     const page = (await s.get('/approvals')).body;
     expect(page).toContain('utilities');
-    expect(page).toContain('90.00 USD');
+    expect(page).toContain('$90.00');
     expect(page).toContain(p.expiresAt);
-    expect(page).toMatch(/Policy version[^<]*<\/th>/);
+    expect(page).toContain(`policy version ${p.policyVersion}`);
     expect(page).toContain(`value="${p.reservationId}"`);
     expect(page).toContain(`name="digest" value="${p.digest}"`);
     expect(page).toContain(`name="nonce" value="${p.nonce}"`);
     expect(page).toContain('action="/approvals/approve"');
     expect(page).toContain('action="/approvals/reject"');
-    expect((await s.get('/')).headers.location).toBe('/approvals');
+    // The overview links to the waiting approval and counts it in the menu.
+    const home = await s.get('/');
+    expect(home.status).toBe(200);
+    expect(home.body).toContain('<a href="/approvals">Review approvals</a>');
+    expect(home.body).toContain('<span class="count">1</span>');
   });
 
   it('approves once; a second submit fails visibly', async () => {
@@ -175,7 +180,7 @@ describe('admin approvals', () => {
     expect(page).not.toContain('-1.-5');
     expect(page).not.toContain('NaN');
     expect(page).toContain('name="digest" value="digest-good"');
-    expect(page).toContain('90.00 USD');
+    expect(page).toContain('$90.00');
   });
 
   it('renders hostile pending fields as literal text', async () => {
@@ -229,8 +234,13 @@ describe('admin activity log', () => {
     }
     seen.length = 0;
     expect((await s.get('/activity')).status).toBe(200);
-    expect(seen.at(-1)?.events).toBeUndefined();
-    expect((await s.get('/activity?type=everything')).status).toBe(400);
+    // The default view leaves out the bookkeeping events; everything shows them all.
+    expect(seen.at(-1)?.events).toEqual([...ACTIVITY_DEFAULT]);
+    expect(seen.at(-1)?.events).not.toContain('action.attempted');
+    seen.length = 0;
+    expect((await s.get('/activity?type=everything')).status).toBe(200);
+    expect(seen.at(-1)?.events).toContain('action.attempted');
+    expect((await s.get('/activity?type=bogus')).status).toBe(400);
     expect((await s.get('/activity?type=denied&type=allowed')).status).toBe(400);
   });
 
@@ -350,5 +360,34 @@ describe('admin emergency stop', () => {
     expect(page).toContain('tr_unknownunknown01');
     expect(page).toContain('not rolled back');
     expect(page).toContain('href="/activity?type=unknown"');
+  });
+});
+
+describe('admin overview and payments', () => {
+  it('shows the balance, usage, payments and refusals in plain words', async () => {
+    const { server, guardian } = await started();
+    await propose(guardian, 1_000);
+    await propose(guardian, 9_000);
+    await propose(guardian, 100, 'attacker');
+    const s = await login(server);
+    const home = (await s.get('/')).body;
+    expect(home).toContain('Running');
+    expect(home).toContain('$4,823.15');
+    expect(home).toMatch(/<strong>2<\/strong> of 3/);
+    expect(home).toMatch(/<strong>\$100\.00<\/strong> of \$250\.00/);
+    expect(home).toContain('Payment of $1.00 to <code>attacker</code>: not on your payee list');
+    const payments = (await s.get('/payments')).body;
+    expect(payments).toContain('$90.00');
+    expect(payments).toContain('Waiting for you');
+    expect(payments).toContain('$10.00');
+    expect(payments).toContain('>Sent<');
+  });
+
+  it('says the agent is stopped after Stop', async () => {
+    const { server, guardian } = await started();
+    await guardian.revoke(agent);
+    const home = (await (await login(server)).get('/')).body;
+    expect(home).toContain('Stopped');
+    expect(home).toContain('All calls refused');
   });
 });

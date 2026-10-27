@@ -4,8 +4,10 @@ import type {
   ApprovalResult,
   CallResult,
   Guardian,
+  Overview,
   PendingApproval,
   PolicyUpdateResult,
+  TransferSummary,
 } from '../src/guardian-api.js';
 import { cleanAppText } from '../src/guardian.js';
 import { requestHash } from '../src/hash.js';
@@ -54,6 +56,7 @@ interface Transfer {
   hash: string;
   state: State;
   reasonCode: TransferReasonCode | null;
+  createdAt: string;
   updatedAt: string;
   pending?: PendingApproval;
 }
@@ -93,8 +96,9 @@ export function createFakeGuardian(options: FakeGuardianOptions): Guardian {
     });
   }
 
-  function deny(agentId: string, tool: AuditEvent['tool'], code: DenyCode, hash: string | null = null): CallResult {
-    log('policy.denied', agentId, { tool, reasonCode: code, requestHash: hash });
+  function deny(agentId: string, tool: AuditEvent['tool'], code: DenyCode, hash: string | null = null, call?: TransferCall): CallResult {
+    const metadata = call ? { payeeId: call.payeeId, amountMinor: call.amountMinor } : {};
+    log('policy.denied', agentId, { tool, reasonCode: code, requestHash: hash, metadata });
     return { ok: false, error: { code, message: code } };
   }
 
@@ -130,16 +134,16 @@ export function createFakeGuardian(options: FakeGuardianOptions): Guardian {
     const existing = byIdempotencyKey.get(key);
     if (existing) {
       // A retry never reserves or executes again; it reports the original transfer.
-      if (existing.hash !== hash) return deny(agentId, call.tool, 'IDEMPOTENCY_CONFLICT', hash);
+      if (existing.hash !== hash) return deny(agentId, call.tool, 'IDEMPOTENCY_CONFLICT', hash, call);
       return proposeResult(existing);
     }
 
     const rules = policy.transfers;
     const code = checkTransfer(call);
-    if (code) return deny(agentId, call.tool, code, hash);
+    if (code) return deny(agentId, call.tool, code, hash, call);
 
     const ref = `tr_${token(16)}`;
-    const t: Transfer = { ref, agentId, call, hash, state: 'RESERVED', reasonCode: null, updatedAt: iso() };
+    const t: Transfer = { ref, agentId, call, hash, state: 'RESERVED', reasonCode: null, createdAt: iso(), updatedAt: iso() };
     transfers.set(ref, t);
     byIdempotencyKey.set(key, t);
 
@@ -337,6 +341,26 @@ export function createFakeGuardian(options: FakeGuardianOptions): Guardian {
       version += 1;
       log('policy.updated', policy.agentId, { metadata: { oldHash, newHash: requestHash(policy) } });
       return { ok: true, version };
+    },
+
+    async getOverview(): Promise<Overview> {
+      const all = [...transfers.values()].filter((t) => t.agentId === policy.agentId);
+      for (const t of all) expire(t);
+      // No rolling windows here: everything that holds budget counts.
+      const held = all.filter((t) => !['FAILED', 'REJECTED', 'EXPIRED'].includes(t.state));
+      return {
+        usage: { reads: 0, transfers: held.length, transferredMinor: held.reduce((sum, t) => sum + t.call.amountMinor, 0) },
+        balance: { balanceMinor: CHECKING_ACCOUNT.openingBalanceMinor, currency: 'USD', observedAt: iso() },
+      };
+    },
+
+    async listTransfers(limit = 20): Promise<TransferSummary[]> {
+      const all = [...transfers.values()].filter((t) => t.agentId === policy.agentId);
+      for (const t of all) expire(t);
+      return all.reverse().slice(0, limit).map((t) => ({
+        reservationId: t.ref, payeeId: t.call.payeeId, amountMinor: t.call.amountMinor, currency: t.call.currency,
+        state: t.state, reasonCode: t.reasonCode, createdAt: t.createdAt, updatedAt: t.updatedAt,
+      }));
     },
 
     async listActivity(filter: ActivityFilter = {}) {
