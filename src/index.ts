@@ -27,14 +27,15 @@ const USAGE = `usage: kordn [--policy <path>] [--data <dir>] [--bank <path> [--l
        kordn contain [--image <ref>] [--policy <path>] [--data <dir>] [--bank <path> [--live]] [--require-contain] [--admin [--admin-port <n>]] [-- <command>...]
 
   (default)              MCP over stdio, guardian in-process (Guard mode)
-  setup                  choose the account to guard (mock, PayPal, Stripe, Plaid), its keys, payees
-                         and limits; saved in ~/.config/kordn and used whenever --policy and
-                         --bank aren't given
+  setup                  choose the account to guard (mock, PayPal, Stripe, Plaid), test or live,
+                         its keys, payees and limits; saved in ~/.config/kordn and used whenever
+                         --policy and --bank aren't given
   --policy <path>        policy file; replaces the stored policy (default: what kordn setup saved,
                          else examples/policy.json, used only on first run)
   --data <dir>           where the ledger and mock bank live (default: ~/.local/state/kordn)
   --bank <path>          a real provider instead of the mock bank (stripe, paypal, or plaid to
-                         read a bank account); keys come from the environment, test mode only
+                         read a bank account); keys come from the environment; test mode unless
+                         --live or the file has "live": true
   --live                 allow live provider keys (PayPal: use live, not sandbox): real money moves
   --guardian <socket>    forward every call to the guardian on this Unix socket (Contain mode)
   --http                 Streamable HTTP at http://127.0.0.1:<port>/mcp; the token is KORDN_TOKEN, or
@@ -70,14 +71,21 @@ async function account(options: { policy?: string; bank?: string }, env: NodeJS.
 
 async function openGuardian(options: { data?: string; live: boolean }, chosen: Awaited<ReturnType<typeof account>>) {
   const { defaultDataDir, openLocalGuardian } = await import('./local-guardian.js');
-  const { loadBankConfig, openBank } = await import('./bank-config.js');
+  const { isLive, loadBankConfig, openBank } = await import('./bank-config.js');
   const bank = chosen.bank === undefined ? undefined : loadBankConfig(chosen.bank);
-  return openLocalGuardian(
+  const local = await openLocalGuardian(
     options.data ?? defaultDataDir(),
     chosen.policy,
     chosen.replace,
     bank && ((enforced) => openBank(bank, enforced, chosen.env, options.live)),
   );
+  const live = bank !== undefined && isLive(bank, chosen.env, options.live);
+  if (live) {
+    process.stderr.write(bank.provider === 'plaid'
+      ? 'kordn: LIVE: reading your real bank account through Plaid\n'
+      : `kordn: LIVE: guarding your real ${bank.provider === 'paypal' ? 'PayPal' : 'Stripe'} account; payments move real money\n`);
+  }
+  return { ...local, live };
 }
 
 const DEFAULT_POLICY = new URL('../examples/policy.json', import.meta.url);
@@ -295,8 +303,8 @@ const MODE_LABEL: Record<Mode, string> = {
  * and in the admin file for when an AI client spawned kordn and hides stderr. The file also
  * goes on any exit, even a forced one.
  */
-async function startAdmin(guardian: Guardian, agentId: string, mode: Mode, port: number, apps?: ConnectedApps): Promise<RunningAdmin> {
-  const admin = await startAdminServer({ guardian, agentId, mode, port, apps });
+async function startAdmin(guardian: Guardian, agentId: string, mode: Mode, port: number, apps?: ConnectedApps, live?: boolean): Promise<RunningAdmin> {
+  const admin = await startAdminServer({ guardian, agentId, mode, port, apps, live });
   let file;
   try {
     file = writeAdminFile({ url: admin.url, token: admin.token, pid: process.pid, agentId });
@@ -372,6 +380,7 @@ async function serve(options: Options, env: NodeJS.ProcessEnv): Promise<void> {
   let handleCall: Guardian['handleCall'];
   let guardian: Guardian | undefined;
   let resourceId: string | undefined;
+  let live = false;
   if (options.guardian !== undefined) {
     agentId = SOCKET_BOUND_AGENT;
     handleCall = createGuardianClient(options.guardian);
@@ -379,7 +388,9 @@ async function serve(options: Options, env: NodeJS.ProcessEnv): Promise<void> {
     // The agent identity is the launcher's policy, not the client's.
     const chosen = await account(options, env);
     const policy = chosen.policy;
-    const local = (await openGuardian(options, chosen)).guardian;
+    const opened = await openGuardian(options, chosen);
+    const local = opened.guardian;
+    live = opened.live;
     guardian = local;
     agentId = policy.agentId;
     resourceId = policy.resourceId;
@@ -420,7 +431,7 @@ async function serve(options: Options, env: NodeJS.ProcessEnv): Promise<void> {
   const admin = options.admin && guardian ? await startAdmin(guardian, agentId, 'guard', options.adminPort, oauthStore && {
         list: () => oauthStore.listApps(),
         revoke: (clientId) => oauthStore.revokeClient(clientId),
-      })
+      }, live)
     : undefined;
   const closeAdmin = admin?.close;
   if (closeAdmin) closers.push(closeAdmin);
@@ -494,7 +505,7 @@ async function contain(options: ContainOptions): Promise<number> {
     controller.signal.throwIfAborted();
     // Up before the checks, so they probe its real port. It says "checking" until they're done,
     // and is up by the time the agent starts, so approvals work.
-    if (options.admin) admin = await startAdmin(guardian, policy.agentId, 'checking', options.adminPort);
+    if (options.admin) admin = await startAdmin(guardian, policy.agentId, 'checking', options.adminPort, undefined, local.live);
     const running = admin;
     const { agent } = await runContain({
       guardian,

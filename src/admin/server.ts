@@ -53,6 +53,8 @@ export interface AdminServerOptions {
   port?: number;
   /** Set when OAuth is on: adds the Apps page. */
   apps?: ConnectedApps;
+  /** A real account, not a test one: every page says so. */
+  live?: boolean;
   nowMs?: () => number;
 }
 
@@ -102,7 +104,7 @@ export async function startAdminServer(options: AdminServerOptions): Promise<Adm
   let origin = '';
   let hostHeader = '';
 
-  const loginContext = (errors?: readonly string[]): PageContext => ({ mode, agentId, errors });
+  const loginContext = (errors?: readonly string[]): PageContext => ({ mode, agentId, errors, live: options.live });
 
   /** For logged-in pages: reads the revoked state for the banner and consumes the flash. */
   async function userContext(r: Request, errors?: readonly string[]): Promise<PageContext & { csrf: string }> {
@@ -111,7 +113,7 @@ export async function startAdminServer(options: AdminServerOptions): Promise<Adm
     const flash = session.flash;
     session.flash = null;
     const pending = (await guardian.listPending()).length;
-    return { mode, agentId, csrf: session.csrf, flash, errors, revoked, apps: apps !== undefined, pending, now: now() };
+    return { mode, agentId, csrf: session.csrf, flash, errors, revoked, apps: apps !== undefined, pending, now: now(), live: options.live };
   }
 
   async function showPolicy(r: Request, status: number, errors?: string[], values?: PolicyFormValues): Promise<void> {

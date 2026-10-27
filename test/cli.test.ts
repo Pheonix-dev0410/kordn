@@ -648,12 +648,14 @@ describe.runIf(process.platform === 'linux')('kordn contain (fake docker)', () =
 describe('kordn setup', () => {
   /** Runs setup with these answers on stdin, one per line. */
   function setup(answers: string[], config: string, state: string) {
-    return new Promise<{ code: number | null; stdout: string }>((done) => {
+    return new Promise<{ code: number | null; stdout: string; stderr: string }>((done) => {
       const child = spawn(process.execPath, [cli, 'setup'], { env: { PATH: process.env.PATH ?? '', XDG_CONFIG_HOME: config, XDG_STATE_HOME: state }, stdio: ['pipe', 'pipe', 'pipe'] });
       cleanup.push(() => child.kill('SIGKILL'));
       let stdout = '';
+      let stderr = '';
       child.stdout.on('data', (d) => (stdout += d));
-      child.on('close', (code) => done({ code, stdout }));
+      child.stderr.on('data', (d) => (stderr += d));
+      child.on('close', (code) => done({ code, stdout, stderr }));
       child.stdin.end(`${answers.join('\n')}\n`);
     });
   }
@@ -690,7 +692,7 @@ describe('kordn setup', () => {
 
   it('saves PayPal payees and keys privately, and kordn uses them without the environment', async () => {
     const [config, state] = [tempDir(), tempDir()];
-    const answers = ['2', 'client-id-1', 'secret-1', 'Bad Name', 'landlord', 'not-an-email', 'me@personal.example.com', '', '', 'n'];
+    const answers = ['2', '', 'client-id-1', 'secret-1', 'Bad Name', 'landlord', 'not-an-email', 'me@personal.example.com', '', '', 'n'];
     const { code, stdout } = await setup(answers, config, state);
     expect(code).toBe(0);
     expect(stdout).toContain('Suggested:\n  - at most $250 a day in total\n  - at most $100 for any one payment\n  - at most 3 payments a day\n  - payments over $75 wait');
@@ -711,9 +713,36 @@ describe('kordn setup', () => {
     expect(existsSync(join(dir, 'bank.json')) || existsSync(join(dir, 'keys.env'))).toBe(false);
   });
 
+  it('sets up real money only when typed out, with small limits and approval for every payment', async () => {
+    const [config, state] = [tempDir(), tempDir()];
+    const refused = await setup(['2', '2', 'yes'], config, state);
+    expect(refused.code).not.toBe(0);
+    expect(refused.stderr).toContain('not confirmed; nothing saved');
+    expect(existsSync(join(config, 'kordn'))).toBe(false);
+
+    // A Stripe test key is refused for live; the live key is taken.
+    const { code, stdout } = await setup(['3', '2', 'Real Money', 'sk_test_x', 'rk_live_x', 'landlord', 'acct_landlord01', '', '', 'n'], config, state);
+    expect(code).toBe(0);
+    expect(stdout).toContain('Live moves real money');
+    expect(stdout).toContain('Use a live key: it starts with rk_live_ or sk_live_.');
+    expect(stdout).toContain('Suggested:\n  - at most $20 a day in total\n  - at most $10 for any one payment\n  - at most 3 payments a day\n  - every payment waits until you approve it on the dashboard');
+    expect(stdout).toContain('kordn now guards your real Stripe account (live: real money).');
+    const dir = join(config, 'kordn');
+    expect(JSON.parse(readFileSync(join(dir, 'bank.json'), 'utf8'))).toEqual({ provider: 'stripe', payees: { landlord: 'acct_landlord01' }, live: true });
+    expect(JSON.parse(readFileSync(join(dir, 'policy.json'), 'utf8')).transfers).toMatchObject({ maxSingleMinor: 1_000, maxCumulativeMinor: 2_000, humanApprovalAboveMinor: 0 });
+
+    // A plain kordn takes the live key without --live, and says it's live.
+    const started = await run([], { XDG_CONFIG_HOME: config, XDG_STATE_HOME: state });
+    expect(started.stderr).toContain('kordn: LIVE: guarding your real Stripe account; payments move real money');
+    expect(started.stderr).not.toContain('--live');
+
+    // And a test key in test mode.
+    expect((await setup(['3', '', 'rk_live_x', 'sk_test_x', 'landlord', 'acct_landlord01', '', '', 'n'], config, state)).stdout).toContain('Use a test key');
+  });
+
   it('is ignored when --policy is given', async () => {
     const [config, state] = [tempDir(), tempDir()];
-    expect((await setup(['2', 'c', 's', 'landlord', 'me@personal.example.com', '', '', 'n'], config, state)).code).toBe(0);
+    expect((await setup(['2', '', 'c', 's', 'landlord', 'me@personal.example.com', '', '', 'n'], config, state)).code).toBe(0);
     const c = await client(config, state, ['--policy', join(root, 'examples', 'policy.json')]);
     expect((await c.callTool(balance)).structuredContent).toMatchObject({ currency: 'USD' });
   });

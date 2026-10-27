@@ -3,7 +3,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import fixture from '../examples/policy.json' with { type: 'json' };
-import { BankConfig, openBank } from '../src/bank-config.js';
+import { BankConfig, isLive, openBank } from '../src/bank-config.js';
 import { Guardian } from '../src/guardian.js';
 import { Ledger } from '../src/ledger.js';
 import { PayPalAdapter } from '../src/paypal.js';
@@ -414,6 +414,17 @@ describe('--bank file', () => {
     expect(openBank(stripeFile, usd, env)).toBeInstanceOf(StripeAdapter);
     expect(openBank(paypalFile, paypal, env)).toBeInstanceOf(PayPalAdapter);
     expect(openBank(plaidFile, plaid, env)).toBeInstanceOf(PlaidAdapter);
+  });
+
+  it('takes live from the file as from --live, and knows which accounts are real', async () => {
+    const stripeLive = BankConfig.parse({ provider: 'stripe', payees: stripePayees, live: true });
+    expect(openBank(stripeLive, usd, { ...env, STRIPE_API_KEY: 'rk_live_x' })).toBeInstanceOf(StripeAdapter);
+    const provider = fakeProvider((req) => (req.url.pathname === '/v1/oauth2/token' ? { status: 200, json: { access_token: 't', expires_in: 60 } } : { status: 200, json: { balances: [{ currency: 'USD', total_balance: { value: '1.00' } }] } }));
+    await openBank(BankConfig.parse({ provider: 'paypal', payees: paypalPayees, live: true }), paypal, env, false, provider.fetch).getBalance('paypal:main');
+    expect(provider.sent.every((r) => r.url.host === 'api-m.paypal.com')).toBe(true);
+    expect(BankConfig.safeParse({ provider: 'paypal', payees: paypalPayees, live: false }).success).toBe(false);
+    expect([isLive(stripeFile, env), isLive(stripeFile, env, true), isLive(stripeLive, env)]).toEqual([false, true, true]);
+    expect([isLive(plaidFile, env), isLive(plaidFile, { ...env, PLAID_ACCESS_TOKEN: 'access-production-x' })]).toEqual([false, true]);
   });
 
   it('opens Plaid without payee ids, and only with its access token', () => {

@@ -51,14 +51,14 @@ type Provider = 'mock' | 'paypal' | 'stripe' | 'plaid';
 const PROVIDERS: Record<Provider, { label: string; resourceId: string; keys: [string, string, boolean][]; payeeLabel: string; payeeId: RegExp }> = {
   mock: { label: 'the built-in mock bank (pretend money)', resourceId: 'mock-bank:checking-01', keys: [], payeeLabel: '', payeeId: /^$/ },
   paypal: {
-    label: 'PayPal (sandbox)',
+    label: 'PayPal',
     resourceId: 'paypal:main',
     keys: [['PAYPAL_CLIENT_ID', 'Client ID', false], ['PAYPAL_CLIENT_SECRET', 'Secret', true]],
     payeeLabel: 'their PayPal email',
     payeeId: /^[^\s@]{1,64}@[^\s@]+\.[^\s@]{2,}$/,
   },
   stripe: {
-    label: 'Stripe (test mode)',
+    label: 'Stripe',
     resourceId: 'stripe:main',
     keys: [['STRIPE_API_KEY', 'Secret key (sk_test_...)', true]],
     payeeLabel: 'their connected account id (acct_...)',
@@ -71,6 +71,15 @@ const PROVIDERS: Record<Provider, { label: string; resourceId: string; keys: [st
     payeeLabel: '',
     payeeId: /^$/,
   },
+};
+
+const LIVE_HELP: Record<'paypal' | 'stripe', string> = {
+  paypal: `You need a PayPal Business account in a country where PayPal allows Payouts (not India), and a live app:
+  1. On developer.paypal.com, switch Apps & Credentials to Live and create an app.
+  2. Turn on Payouts and Transaction search for it. PayPal may review your business first.
+  3. Copy the app's Client ID and Secret.`,
+  stripe: `You need a live restricted key (rk_live_...) that can only create transfers and read your balance,
+  and a connected account (acct_...) for each payee. Dashboard: Developers > API keys, and Connect > Accounts.`,
 };
 
 const HELP: Record<Exclude<Provider, 'mock'>, string> = {
@@ -120,14 +129,33 @@ export async function runSetup(options: { data?: string }, env: NodeJS.ProcessEn
     say('kordn setup: answer a few questions, press Enter to take the [default].\n');
     say('Which account should kordn guard?');
     say('  1) the built-in mock bank: pretend money, to try kordn out');
-    say('  2) PayPal (sandbox)');
-    say('  3) Stripe (test mode)');
+    say('  2) PayPal');
+    say('  3) Stripe');
     say('  4) a bank account through Plaid: read-only, balance and transactions (US banks)');
     let provider: Provider | undefined;
     while (!provider) {
       provider = ({ '': 'mock', '1': 'mock', '2': 'paypal', '3': 'stripe', '4': 'plaid' } as const)[await p.ask('Choose 1, 2, 3 or 4 [1]: ')];
     }
     const info = PROVIDERS[provider];
+
+    // Real money only when chosen twice: Live, then typing it out.
+    let live = false;
+    if (provider === 'paypal' || provider === 'stripe') {
+      say('\nTest or real money?');
+      say(`  1) Test: ${provider === 'paypal' ? 'the PayPal sandbox' : 'Stripe test mode'}, pretend money`);
+      say(`  2) Live: your real ${info.label} account, real money`);
+      let choice: string | undefined;
+      while (choice === undefined) choice = ({ '': 'test', '1': 'test', '2': 'live' } as Record<string, string>)[await p.ask('Choose 1 or 2 [1]: ')];
+      live = choice === 'live';
+      if (live) {
+        say('\nLive moves real money. kordn is an alpha with no warranty: you use it at your own risk.');
+        say('Setup will suggest small limits, with every payment waiting for your approval.');
+        if ((await p.ask('Type "real money" to go on: ')).trim().toLowerCase() !== 'real money') throw new Error('not confirmed; nothing saved');
+      }
+    }
+    const accountLabel = provider === 'mock' || provider === 'plaid'
+      ? info.label
+      : `${live ? 'your real ' : ''}${info.label}${live ? ' account (live: real money)' : provider === 'paypal' ? ' (sandbox)' : ' (test mode)'}`;
 
     const keys: Record<string, string> = {};
     let environment: PlaidEnvironment = 'sandbox';
@@ -140,13 +168,14 @@ export async function runSetup(options: { data?: string }, env: NodeJS.ProcessEn
       environment = choice;
     }
     if (provider !== 'mock') {
-      say(`\n${HELP[provider]}\n`);
+      say(`\n${live && provider !== 'plaid' ? LIVE_HELP[provider] : HELP[provider]}\n`);
       for (const [name, label, hidden] of info.keys) {
         while (!keys[name]) {
           const value = await p.ask(`${label}${hidden ? ' (hidden as you type)' : ''}: `, hidden);
-          // Live keys move real money; setup only takes test keys (kordn --live is the deliberate way).
-          if (name === 'STRIPE_API_KEY' && value && !/^(sk|rk)_test_/.test(value)) say('  Use a test key: it starts with sk_test_ or rk_test_.');
-          else keys[name] = value;
+          // A Stripe key says which mode it's for: it has to match the choice above.
+          if (name === 'STRIPE_API_KEY' && value && !(live ? /^(sk|rk)_live_/ : /^(sk|rk)_test_/).test(value)) {
+            say(live ? '  Use a live key: it starts with rk_live_ or sk_live_.' : '  Use a test key: it starts with sk_test_ or rk_test_.');
+          } else keys[name] = value;
         }
       }
     }
@@ -189,7 +218,7 @@ export async function runSetup(options: { data?: string }, env: NodeJS.ProcessEn
 
     // Plaid can't pay, so its payment limits are only placeholders: transfers stay off.
     const readOnly = provider === 'plaid';
-    const limits = readOnly ? { daily: 25_000, single: 10_000, calls: 0, approval: 0 } : await askLimits(p, say);
+    const limits = readOnly ? { daily: 25_000, single: 10_000, calls: 0, approval: 0 } : await askLimits(p, say, live);
     const { daily, single, calls, approval } = limits;
 
     const policy = Policy.parse({
@@ -210,9 +239,9 @@ export async function runSetup(options: { data?: string }, env: NodeJS.ProcessEn
         humanApprovalAboveMinor: approval,
       },
     });
-    const bank = provider === 'mock' ? undefined : BankConfig.parse(plaid ? { provider, accountId: plaid.accountId } : { provider, payees });
+    const bank = provider === 'mock' ? undefined : BankConfig.parse(plaid ? { provider, accountId: plaid.accountId } : { provider, payees, ...(live && { live: true }) });
 
-    if (bank && !plaid && (await p.ask(`\nCheck the keys with ${info.label} now? [Y/n]: `)).toLowerCase() !== 'n') {
+    if (bank && !plaid && (await p.ask(`\nCheck the keys with ${accountLabel} now? [Y/n]: `)).toLowerCase() !== 'n') {
       try {
         const balance = await openBank(bank, policy, { ...env, ...keys }).getBalance(policy.resourceId);
         say(`  Works. Balance: $${(balance.balanceMinor / 100).toFixed(2)}`);
@@ -241,7 +270,8 @@ export async function runSetup(options: { data?: string }, env: NodeJS.ProcessEn
     const local = await openLocalGuardian(options.data ?? defaultDataDir(env), policy, true, bank && ((enforced) => openBank(bank, enforced, { ...env, ...keys })));
     local.close();
 
-    say(`\nSaved in ${dir}. kordn now guards ${info.label}.`);
+    say(`\nSaved in ${dir}. kordn now guards ${accountLabel}.`);
+    if (live) say('Every payment waits for your approval on the dashboard, so always start kordn with --admin.');
     say('\nConnect your AI app:');
     say('  Claude Code:                 claude mcp add kordn -- kordn --admin');
     say('  Claude Desktop, Cursor:      add {"command": "kordn", "args": ["--admin"]} under mcpServers');
@@ -294,15 +324,18 @@ async function connectPlaid(p: Prompter, say: (text?: string) => void, keys: Pla
 
 const usd = (minor: number) => `$${(minor / 100).toFixed(minor % 100 ? 2 : 0)}`;
 
-/** The suggested limits in one yes/no, or each one asked in plain words, the daily total first. */
-async function askLimits(p: Prompter, say: (text?: string) => void) {
+/**
+ * The suggested limits in one yes/no, or each one asked in plain words, the daily total first.
+ * With real money the suggestion is small, and every payment waits for approval.
+ */
+async function askLimits(p: Prompter, say: (text?: string) => void, live: boolean) {
   const describe = (l: { daily: number; single: number; calls: number; approval: number }) => [
     `  - at most ${usd(l.daily)} a day in total`,
     `  - at most ${usd(l.single)} for any one payment`,
     `  - at most ${l.calls} payment${l.calls === 1 ? '' : 's'} a day`,
-    `  - payments over ${usd(l.approval)} wait until you approve them on the dashboard`,
+    l.approval === 0 ? '  - every payment waits until you approve it on the dashboard' : `  - payments over ${usd(l.approval)} wait until you approve them on the dashboard`,
   ];
-  const suggested = { daily: 25_000, single: 10_000, calls: 3, approval: 7_500 };
+  const suggested = live ? { daily: 2_000, single: 1_000, calls: 3, approval: 0 } : { daily: 25_000, single: 10_000, calls: 3, approval: 7_500 };
   say('\nHow much may the AI spend? Suggested:');
   for (const line of describe(suggested)) say(line);
   const later = 'You can change them any time on the dashboard, under Limits.';
@@ -311,11 +344,11 @@ async function askLimits(p: Prompter, say: (text?: string) => void) {
     return suggested;
   }
 
-  const dollars = async (question: string, fallback: number, max = Infinity) => {
+  const dollars = async (question: string, fallback: number, max = Infinity, zeroOk = false) => {
     for (;;) {
       const answer = (await p.ask(`  ${question} [${usd(fallback)}]: `)).replace(/^\$/, '');
       const cents = !answer ? fallback : /^\d+(\.\d{1,2})?$/.test(answer) ? Math.round(Number(answer) * 100) : NaN;
-      if (!AmountMinor.safeParse(cents).success) say('  Enter an amount like 100 or 49.99.');
+      if (!(zeroOk && cents === 0) && !AmountMinor.safeParse(cents).success) say('  Enter an amount like 100 or 49.99.');
       else if (cents > max) say(`  That's more than your daily total of ${usd(max)}. Enter ${usd(max)} or less.`);
       else return cents;
     }
@@ -332,7 +365,7 @@ async function askLimits(p: Prompter, say: (text?: string) => void) {
   const daily = await dollars('How much may the AI spend in a day, in total?', suggested.daily);
   const single = await dollars('The most for any one payment?', Math.min(suggested.single, daily), daily);
   const calls = await count('How many payments a day, at most?', suggested.calls);
-  const approval = await dollars('Ask you first for payments over how much?', Math.min(suggested.approval, single));
+  const approval = await dollars('Ask you first for payments over how much? ($0 means every payment)', Math.min(suggested.approval, single), Infinity, true);
   const chosen = { daily, single, calls, approval };
   say('\nYour limits:');
   for (const line of describe(chosen)) say(line);

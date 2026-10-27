@@ -294,6 +294,16 @@ describe('admin policy editor', () => {
     expect(() => server.setMode('observe' as 'guard')).toThrow(/mode/);
   });
 
+  it('warns on every page, the login too, when the account is live', async () => {
+    const { server } = await started({ live: true });
+    const warning = 'Live: this is a real account, and payments move real money.';
+    expect((await send(server, 'GET', '/login')).body).toContain(warning);
+    const s = await login(server);
+    for (const path of ['/', '/approvals', '/policy']) expect((await s.get(path)).body, path).toContain(warning);
+    const { server: test } = await started();
+    expect((await send(test, 'GET', '/login')).body).not.toContain(warning);
+  });
+
   it('shows no payment fields when payments are off, and saving reads keeps them off', async () => {
     const readOnly = { ...policy, resourceId: 'plaid:main', transfers: { ...policy.transfers, allow: false, allowedPayeeIds: [] } };
     const { server, guardian } = await started({ guardian: createFakeGuardian({ policy: readOnly }) });

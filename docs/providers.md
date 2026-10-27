@@ -43,7 +43,20 @@ Choose Plaid, then:
 
 kordn checks the keys by reading your balance, then saves everything in `~/.config/kordn`, readable only by you. From then on, a plain `kordn` guards that account. Run `kordn setup` again to change anything.
 
-kordn uses the PayPal sandbox and refuses live Stripe keys unless you start it with `--live`. With `--live`, real money moves, at your own risk.
+## Real money
+
+Setup asks **Test or Live** for PayPal and Stripe. Live is your real account, and payments move real money, at your own risk:
+
+- You type `real money` to confirm.
+- The suggested limits are small: $10 per payment, $20 a day, 3 payments a day, and **every payment waits for your approval** on the dashboard. So always start kordn with `--admin`.
+- kordn prints `kordn: LIVE: …` when it starts, and the dashboard says Live on every page.
+- **PayPal live** needs a PayPal **Business** account in a country where PayPal allows Payouts (not India), a **Live** app on developer.paypal.com with Payouts and Transaction search turned on, and possibly a review by PayPal. PayPal charges a fee per payout.
+- **Stripe live** takes a live key (`rk_live_…` or `sk_live_…`). Use a restricted key that can only create transfers and read your balance.
+- **Plaid Production** reads your real bank. Plaid only gives production access after you apply.
+
+Start small: one payee who is you (a second account of your own), and a $1 payment you approve on the dashboard.
+
+Without setup, `--live` with `--bank` does the same: kordn uses the PayPal sandbox and refuses live Stripe keys unless you pass it.
 
 <details>
 <summary>Without setup: the files by hand</summary>
