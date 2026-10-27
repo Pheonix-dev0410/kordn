@@ -1,5 +1,6 @@
 import { createHash } from 'node:crypto';
 import { afterEach, describe, expect, it } from 'vitest';
+import { money } from '../src/admin/pages.js';
 import { startAdminServer, type AdminServer } from '../src/admin/server.js';
 import { createFakeGuardian } from './fake-guardian.js';
 import { agent, login, originOf, policy, type Reply, send, start } from './admin-helpers.js';
@@ -428,5 +429,11 @@ describe('admin policy editor', () => {
     const res = await send(server, 'GET', '/policy', { headers: { cookie } });
     expect(res.status).toBe(503);
     expect(res.body).not.toContain('db down');
+  });
+});
+
+describe('money on the dashboard', () => {
+  it('shows zero and negative balances with the sign in front', () => {
+    expect([money(0), money(-1_234), money(-123_456_789), money(5)]).toEqual(['$0.00', '-$12.34', '-$1,234,567.89', '$0.05']);
   });
 });

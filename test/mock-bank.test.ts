@@ -39,6 +39,19 @@ describe('mock bank adapter', () => {
     } finally { bank.close(); rmSync(dir, { recursive: true, force: true }); }
   });
 
+  it('refuses a payment over the balance, and can go down to exactly zero', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'kordn-bank-'));
+    const bank = new MockBankAdapter(join(dir, 'bank.sqlite'));
+    try {
+      const opening = CHECKING_ACCOUNT.openingBalanceMinor;
+      expect(await bank.execute('reservation-1', transfer(0, opening + 1))).toEqual({ state: 'failed', reasonCode: 'INSUFFICIENT_FUNDS' });
+      expect((await bank.getBalance(CHECKING_ACCOUNT.resourceId)).balanceMinor).toBe(opening);
+      expect((await bank.execute('reservation-2', transfer(1, opening))).state).toBe('succeeded');
+      expect((await bank.getBalance(CHECKING_ACCOUNT.resourceId)).balanceMinor).toBe(0);
+      expect(await bank.execute('reservation-3', transfer(2, 1))).toEqual({ state: 'failed', reasonCode: 'INSUFFICIENT_FUNDS' });
+    } finally { bank.close(); rmSync(dir, { recursive: true, force: true }); }
+  });
+
   it('reconciles an applied transfer whose response was lost', async () => {
     const bank = new MockBankAdapter(':memory:');
     try {
