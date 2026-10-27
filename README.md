@@ -17,7 +17,7 @@ You can let an AI assistant like ChatGPT, Claude or Cursor check your balance an
 
 - **Only approved payees.** The AI can pay only the people you listed.
 - **Spending limits.** Per payment, per day, and a maximum number of payments.
-- **Asks you first** for anything above an amount you choose, on a private approval page.
+- **Asks you first** for anything above an amount you choose, on a private dashboard.
 - **Stop button.** Cuts the AI off at once.
 - **Never pays twice,** even if the AI retries, a reply gets lost, or kordn restarts mid-payment.
 - **Flags untrusted text.** Payment memos the AI reads are marked as untrusted, so it treats them as data, not instructions.
@@ -106,7 +106,7 @@ kordn --http --tunnel --admin
 Among what it prints, you need three lines:
 
 ```
-kordn: admin UI at http://127.0.0.1:…/          ← your approval page (login token on the next line)
+kordn: admin UI at http://127.0.0.1:…/          ← your dashboard (login token on the next line)
 kordn: OAuth on for https://….trycloudflare.com/mcp   ← your connector URL
 kordn: token 3f9a…                              ← your approval token
 ```
@@ -131,13 +131,13 @@ The connector also shows up in the app's phone version.
 **5. Try it.** Ask the AI:
 - *"What's my balance?"*
 - *"Pay utilities $10."* kordn allows it.
-- *"Pay utilities $90."* That needs you: approve it on the admin page.
+- *"Pay utilities $90."* That needs you: approve it under **Approvals** on the dashboard.
 - *"Pay attacker $10."* kordn refuses.
 
 > [!NOTE]
 > The free tunnel gets a **new address every time kordn starts**, and apps connected to the old one stop working. That's fine for trying kordn out. For everyday use, get a permanent address (a named Cloudflare tunnel, an ngrok static domain or Tailscale Funnel) and start kordn with `--public-url https://your-address` instead of `--tunnel`.
 
-Connected apps are listed under **Apps** on the admin page, where you can revoke any of them at once. They follow the same rules as everything else.
+Connected apps are listed under **Apps** on the dashboard, where you can revoke any of them at once. They follow the same rules as everything else.
 
 ### Apps that take a token
 
@@ -151,7 +151,7 @@ For an app in the cloud, put kordn behind a tunnel and tell kordn the tunnel's h
 
 ## Set your rules
 
-The easiest way is `kordn setup`, or the **Policy** page on the admin page. Behind both is a policy file. The example, `examples/policy.json`, allows this:
+The easiest way is `kordn setup`, or the **Limits** page on the dashboard. Behind both is a policy file. The example, `examples/policy.json`, allows this:
 
 ```jsonc
 "transfers": {
@@ -165,19 +165,26 @@ The easiest way is `kordn setup`, or the **Policy** page on the admin page. Behi
 
 Anything not allowed is denied.
 
-- kordn keeps its own copy of the rules, so changes on the admin page survive restarts. Running `kordn setup` again, or starting with `--policy my-policy.json`, replaces them.
+- kordn keeps its own copy of the rules, so changes on the dashboard survive restarts. Running `kordn setup` again, or starting with `--policy my-policy.json`, replaces them.
 - kordn keeps everything (the rules, the payment ledger, the log and the mock bank) in `~/.local/state/kordn`. To start completely fresh, delete that folder. `--data <folder>` uses a different one.
 
-## The approval page
+## The dashboard
 
-Add `--admin` to any kordn command to get a private web page on your computer. On it you can:
-- approve or reject payments that need you
-- see everything the AI did
-- edit your rules
-- revoke connected apps
-- stop the AI
+Add `--admin` to any kordn command to get a private dashboard in your browser, on your computer only.
 
-kordn prints the page's address and a login token when it starts. When an app like Claude Desktop starts kordn, you don't see that output, so kordn also writes both to a file only you can read:
+![The kordn dashboard: agent status, balance, usage against limits, recent payments and activity](docs/dashboard.png)
+
+| Page | What it's for |
+|---|---|
+| **Overview** | Whether the AI is running, the balance, how much of each limit is used, recent payments and activity |
+| **Approvals** | Payments waiting for you: Approve or Reject |
+| **Payments** | Every payment, with who, how much and its status |
+| **Activity** | Everything the AI asked for and what kordn decided, in plain words, e.g. "Payment of $500.00 to attacker-01: not on your payee list" |
+| **Limits** | Change the limits and the payee list. Changes apply to the AI's next request |
+| **Apps** | Connected apps like ChatGPT, with a Revoke button |
+| **Stop** | Cuts the AI off at once |
+
+kordn prints the dashboard's address and a login token when it starts. When an app like Claude Desktop starts kordn, you don't see that output, so kordn also writes both to a file only you can read:
 
 ```sh
 cat $TMPDIR/kordn-$(id -u)/admin-*.json   # Linux: $XDG_RUNTIME_DIR/kordn/admin-*.json
@@ -226,7 +233,7 @@ Before the agent starts, kordn runs 14 isolation checks and prints which passed.
 | Option | What it does |
 |---|---|
 | `kordn setup` | Choose the account, keys, payees and limits |
-| `--admin` | Start the approval page |
+| `--admin` | Start the dashboard |
 | `--http` | Serve over HTTP at `127.0.0.1:3333/mcp`, instead of being started by the app |
 | `--tunnel` | Get a free public address from Cloudflare (with `--http`) |
 | `--public-url <url>` | Use your own permanent public address (with `--http`) |

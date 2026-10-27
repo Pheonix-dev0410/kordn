@@ -6,11 +6,14 @@ import { AgentId } from '../schema.js';
 import { Form, POLICY_FIELDS, parseCount, type PolicyFormValues, policyFormValues, readPolicyForm } from './forms.js';
 import type { Html } from './html.js';
 import {
+  ACTIVITY_DEFAULT,
   ACTIVITY_FILTERS,
   type ActivityType,
   activityPage,
   appsPage,
   approvalsPage,
+  overviewPage,
+  paymentsPage,
   CSP,
   loginPage,
   type Mode,
@@ -28,6 +31,7 @@ export const LOOPBACK = '127.0.0.1';
 export const LOGIN_FAILURES_PER_MINUTE = 5;
 export const DECISIONS_PER_MINUTE = 30;
 const ACTIVITY_LIMIT = 200;
+const TRANSFER_LIMIT = 500;
 const MAX_BODY_BYTES = 16 * 1024;
 const COOKIE = 'kordn_admin';
 
@@ -106,7 +110,8 @@ export async function startAdminServer(options: AdminServerOptions): Promise<Adm
     const session = r.session!;
     const flash = session.flash;
     session.flash = null;
-    return { mode, agentId, csrf: session.csrf, flash, errors, revoked, apps: apps !== undefined };
+    const pending = (await guardian.listPending()).length;
+    return { mode, agentId, csrf: session.csrf, flash, errors, revoked, apps: apps !== undefined, pending, now: now() };
   }
 
   async function showPolicy(r: Request, status: number, errors?: string[], values?: PolicyFormValues): Promise<void> {
@@ -116,6 +121,7 @@ export async function startAdminServer(options: AdminServerOptions): Promise<Adm
       resourceId: policy.resourceId,
       currency: policy.transfers.currency,
       version,
+      realBank: !policy.resourceId.startsWith('mock-bank:'),
       values: values ?? policyFormValues(policy),
     });
     sendHtml(r.res, status, page);
@@ -169,7 +175,18 @@ export async function startAdminServer(options: AdminServerOptions): Promise<Adm
 
   const routes: Record<string, { GET?: Handler; POST?: Handler }> = {
     '/': {
-      GET: async (r) => redirect(r.res, '/approvals'),
+      GET: async (r) => {
+        const [overview, { policy }, transfers, events] = await Promise.all([
+          guardian.getOverview(),
+          guardian.getPolicy(),
+          guardian.listTransfers(TRANSFER_LIMIT),
+          guardian.listActivity({ events: [...ACTIVITY_DEFAULT], limit: 8 }),
+        ]);
+        sendHtml(r.res, 200, overviewPage(await userContext(r), overview, policy, transfers, events));
+      },
+    },
+    '/payments': {
+      GET: async (r) => sendHtml(r.res, 200, paymentsPage(await userContext(r), await guardian.listTransfers(TRANSFER_LIMIT))),
     },
     '/login': {
       GET: async (r) => (r.session ? redirect(r.res, '/') : sendHtml(r.res, 200, loginPage(loginContext()))),
@@ -220,10 +237,10 @@ export async function startAdminServer(options: AdminServerOptions): Promise<Adm
         if (types.length > 1 || (type !== null && !Object.hasOwn(ACTIVITY_FILTERS, type))) {
           throw new HttpError(400, 'Unknown activity filter.');
         }
-        const events = await guardian.listActivity(
-          type ? { events: [...ACTIVITY_FILTERS[type as ActivityType]], limit: ACTIVITY_LIMIT } : { limit: ACTIVITY_LIMIT },
-        );
-        sendHtml(r.res, 200, activityPage(await userContext(r), events, type as ActivityType | null));
+        const events = await guardian.listActivity({ events: [...(type ? ACTIVITY_FILTERS[type as ActivityType] : ACTIVITY_DEFAULT)], limit: ACTIVITY_LIMIT });
+        // Payee and amount for events that only carry the reservation id.
+        const transfers = await guardian.listTransfers(TRANSFER_LIMIT);
+        sendHtml(r.res, 200, activityPage(await userContext(r), events, type as ActivityType | null, transfers));
       },
     },
     '/stop': {

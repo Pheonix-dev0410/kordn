@@ -1,4 +1,4 @@
-import type { AuditEvent, Currency, DenyCode, Policy } from './schema.js';
+import type { AuditEvent, Currency, DenyCode, Policy, State, TransferReasonCode } from './schema.js';
 
 // What the MCP server (#9), the sandbox launcher (#12) and the admin UI (#14, #15) need
 // from the guardian. src/guardian.ts implements it; test/fake-guardian.ts is an in-memory stand-in for tests.
@@ -26,6 +26,26 @@ export type ApprovalError = 'NOT_PENDING' | 'STALE_DIGEST' | 'BAD_NONCE' | DenyC
 export type ApprovalResult = { ok: true } | { ok: false; code: ApprovalError };
 
 export type PolicyUpdateResult = { ok: true; version: number } | { ok: false; code: 'VERSION_CONFLICT' | 'INVALID_POLICY' };
+
+/** A transfer as the admin UI lists it. */
+export interface TransferSummary {
+  reservationId: string;
+  payeeId: string;
+  amountMinor: number;
+  currency: Currency;
+  state: State;
+  reasonCode: TransferReasonCode | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+/** What the admin UI's overview shows. */
+export interface Overview {
+  /** What counts against the limits right now: reads this window, transfers and their total this window. */
+  usage: { reads: number; transfers: number; transferredMinor: number };
+  /** The bank's balance, or null when the bank didn't answer. Read for the owner: not counted or logged as an agent read. */
+  balance: { balanceMinor: number; currency: Currency; observedAt: string } | null;
+}
 
 export type OAuthAuditEvent = 'oauth.approved' | 'oauth.denied' | 'oauth.revoked' | 'oauth.refresh_reused';
 
@@ -72,4 +92,10 @@ export interface Guardian {
 
   /** Logs one audit event as the guardian's own agent. Never rejects. */
   recordOAuthEvent(event: OAuthAuditEvent, app: { client: string; redirectHost: string }): Promise<void>;
+
+  /** Usage against the limits and the balance, for the admin UI. */
+  getOverview(): Promise<Overview>;
+
+  /** The latest `limit` transfers (default 20, at most 500), newest first. */
+  listTransfers(limit?: number): Promise<TransferSummary[]>;
 }

@@ -44,7 +44,7 @@ describe('connected apps', () => {
     expect(page.body).toContain(ESCAPED);
     expect(page.body).not.toContain(HOSTILE);
     expect(page.body).toContain('app.example:8443');
-    expect(page.body).toContain('<a href="/apps">Apps</a>');
+    expect(page.body).toMatch(/<a href="\/apps"[^>]*>Apps<\/a>/);
   });
 
   it('revokes an app, audits it and kills its tokens', async () => {
