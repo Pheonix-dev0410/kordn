@@ -16,6 +16,8 @@ import { labelUntrusted } from './untrusted.js';
 const SANDBOX = 'https://api-m.sandbox.paypal.com';
 const LIVE = 'https://api-m.paypal.com';
 const FENCE_ITEM = 'kordn-fence';
+// PayPal's largest transaction-search page.
+const PAGE_SIZE = 500;
 
 export interface PayPalOptions {
   clientId: string;
@@ -100,23 +102,36 @@ export class PayPalAdapter implements BankAdapter {
   }
 
   async listTransactions(_resourceId: string, fromDate: string, limit: number) {
-    // PayPal searches at most 31 days at a time.
+    // PayPal searches at most 31 days at a time, and lists oldest first.
     const start = Date.parse(fromDate);
     const end = Math.min(Date.now(), start + 31 * 86_400_000);
-    const query = new URLSearchParams({
-      start_date: new Date(start).toISOString(),
-      end_date: new Date(end).toISOString(),
-      fields: 'transaction_info',
-      page_size: String(limit),
-    });
-    const { transaction_details: details = [] } = await this.request<{ transaction_details?: { transaction_info: PayPalTransaction }[] }>(
-      'GET',
-      `/v1/reporting/transactions?${query}`,
-    );
+    const page = async (n: number) => {
+      const query = new URLSearchParams({
+        start_date: new Date(start).toISOString(),
+        end_date: new Date(end).toISOString(),
+        fields: 'transaction_info',
+        page_size: String(PAGE_SIZE),
+        page: String(n),
+      });
+      return this.request<{ transaction_details?: { transaction_info: PayPalTransaction }[]; total_pages?: number }>(
+        'GET',
+        `/v1/reporting/transactions?${query}`,
+      );
+    };
+    const first = await page(1);
+    let details = first.transaction_details ?? [];
+    const pages = first.total_pages ?? 1;
+    // The newest are on the last page; the one before it fills up a short last page.
+    if (pages > 1) {
+      const last = (await page(pages)).transaction_details ?? [];
+      const before = last.length >= limit ? [] : pages === 2 ? details : ((await page(pages - 1)).transaction_details ?? []);
+      details = [...before, ...last];
+    }
     return TOOL_OUTPUTS.af_list_transactions.parse({
       transactions: details
         .map((d) => d.transaction_info)
         .filter((tx) => tx.transaction_amount.currency_code === 'USD')
+        .sort((a, b) => Date.parse(b.transaction_initiation_date) - Date.parse(a.transaction_initiation_date))
         .slice(0, limit)
         .map((tx) => ({
           transactionId: tx.transaction_id,
