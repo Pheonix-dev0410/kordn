@@ -9,7 +9,7 @@ import { type DenyCode, DenyCode as DenyCodeSchema, TOOL_INPUTS, TOOL_NAMES, typ
 // with a non-string name or non-object arguments. So tools/call is served from the
 // fallback handler, which gets the raw request.
 
-export const SERVER_INFO = { name: 'kordn', version: '0.1.0-alpha' };
+export const SERVER_INFO = { name: 'kordn', version: '0.2.0-alpha' };
 
 const DESCRIPTIONS: Record<ToolName, string> = {
   af_get_balance: 'Read the balance of the bank account kordn guards.',

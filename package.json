@@ -1,6 +1,6 @@
 {
   "name": "kordn",
-  "version": "0.1.0-alpha",
+  "version": "0.2.0-alpha",
   "private": true,
   "description": "A firewall for AI agents: enforces spending and access limits on MCP tool calls, outside the model.",
   "license": "Apache-2.0",
