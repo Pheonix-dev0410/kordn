@@ -4,12 +4,14 @@ import type { AddressInfo } from 'node:net';
 import {
   bearerAuthChallengeResponse,
   createMcpHandler,
+  isLegacyRequest,
   localhostAllowedHostnames,
   localhostAllowedOrigins,
   type Server,
   validateHostHeader,
   validateOriginHeader,
   verifyBearerToken,
+  WebStandardStreamableHTTPServerTransport,
 } from '@modelcontextprotocol/server';
 import { OAUTH_PATHS, type OAuthServer } from './oauth/server.js';
 
@@ -17,6 +19,9 @@ import { OAUTH_PATHS, type OAuthServer } from './oauth/server.js';
 // token, or with OAuth on, an access token; only the OAuth endpoints are open. Host and
 // Origin are checked first (MCP's DNS-rebinding guidance), so a page in the user's browser
 // can't reach the server through a rebound name.
+//
+// Replies are plain JSON, never an SSE stream: kordn sends no progress or other messages
+// mid-call, and some tunnels (Cloudflare's quick tunnels) don't pass SSE through.
 
 export const MIN_TOKEN_LENGTH = 32;
 const MAX_BODY_BYTES = 1024 * 1024;
@@ -65,6 +70,7 @@ export async function serveHttp(options: HttpOptions): Promise<HttpHandle> {
   if (oauth) extra.push(oauth.publicUrl.hostname);
   const hosts = [...localhostAllowedHostnames(), ...extra];
   const origins = [...localhostAllowedOrigins(), ...extra];
+  // The modern path already answers in JSON when nothing is sent before the result.
   const handler = createMcpHandler(options.factory);
 
   const server = createServer((req, res) => {
@@ -104,10 +110,9 @@ export async function serveHttp(options: HttpOptions): Promise<HttpHandle> {
 
     const abort = new AbortController();
     res.on('close', () => abort.abort());
-    const response = await handler.fetch(
-      new Request(url, { method: req.method, headers: toHeaders(req), body, signal: abort.signal }),
-    );
-    await send(res, response);
+    const request = new Request(url, { method: req.method, headers: toHeaders(req), body, signal: abort.signal });
+    const legacy = await isLegacyRequest(request);
+    await send(res, legacy ? await legacyJson(options.factory, request) : await handler.fetch(request));
   }
 
   await new Promise<void>((resolve, reject) => {
@@ -128,6 +133,25 @@ export async function serveHttp(options: HttpOptions): Promise<HttpHandle> {
       await new Promise<void>((resolve) => server.close(() => resolve()));
     },
   };
+}
+
+/**
+ * 2025-era clients (most of them today), served statelessly like createMcpHandler does,
+ * but with JSON replies: its own legacy leg always streams.
+ */
+async function legacyJson(factory: () => Server, request: Request): Promise<Response> {
+  if (request.method !== 'POST') {
+    return Response.json({ jsonrpc: '2.0', error: { code: -32000, message: 'Method not allowed.' }, id: null }, { status: 405, headers: { allow: 'POST' } });
+  }
+  const server = factory();
+  const transport = new WebStandardStreamableHTTPServerTransport({ sessionIdGenerator: undefined, enableJsonResponse: true });
+  await server.connect(transport);
+  try {
+    return await transport.handleRequest(request);
+  } finally {
+    await transport.close().catch(() => {});
+    await server.close().catch(() => {});
+  }
 }
 
 async function serveOAuth(req: IncomingMessage, res: ServerResponse, url: URL, oauth: OAuthServer): Promise<void> {

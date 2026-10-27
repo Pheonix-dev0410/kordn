@@ -1,5 +1,6 @@
 #!/usr/bin/env node
-import { readFileSync } from 'node:fs';
+import { randomBytes } from 'node:crypto';
+import { readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { constants } from 'node:os';
 import { parseArgs } from 'node:util';
@@ -13,14 +14,15 @@ import { createGuardianClient } from './guardian-client.js';
 import { MIN_TOKEN_LENGTH, serveHttp } from './http.js';
 import { createMcpServer } from './mcp-server.js';
 import { createOAuthServer, parsePublicUrl } from './oauth/server.js';
-import { OAuthStore } from './oauth/store.js';
+import type { OAuthStore } from './oauth/store.js';
 import { assertContainPlatform, formatReport, reapStaleContainers, runContain } from './sandbox.js';
 import { Policy } from './schema.js';
+import { startQuickTunnel } from './tunnel.js';
 
 // The kordn CLI and the only place arguments are parsed. stdout belongs to the MCP
 // stdio transport, so everything human-readable goes to stderr.
 
-const USAGE = `usage: kordn [--policy <path>] [--data <dir>] [--bank <path> [--live]] [--guardian <socket>] [--http [--port <n>] [--allowed-host <name>]... [--public-url <url>]] [--admin [--admin-port <n>]]
+const USAGE = `usage: kordn [--policy <path>] [--data <dir>] [--bank <path> [--live]] [--guardian <socket>] [--http [--port <n>] [--allowed-host <name>]... [--public-url <url> | --tunnel]] [--admin [--admin-port <n>]]
        kordn contain [--image <ref>] [--policy <path>] [--data <dir>] [--bank <path> [--live]] [--require-contain] [--admin [--admin-port <n>]] [-- <command>...]
 
   (default)              MCP over stdio, guardian in-process (Guard mode)
@@ -31,10 +33,13 @@ const USAGE = `usage: kordn [--policy <path>] [--data <dir>] [--bank <path> [--l
                          keys come from the environment, test mode only
   --live                 allow live provider keys (PayPal: use live, not sandbox): real money moves
   --guardian <socket>    forward every call to the guardian on this Unix socket (Contain mode)
-  --http                 Streamable HTTP at http://127.0.0.1:<port>/mcp, needs KORDN_TOKEN
+  --http                 Streamable HTTP at http://127.0.0.1:<port>/mcp; the token is KORDN_TOKEN, or
+                         one kordn makes and keeps in <data>/http-token
   --port <n>             HTTP port (default 3333)
   --allowed-host <name>  also accept this Host/Origin, e.g. a tunnel's public hostname
   --public-url <url>     turn on OAuth for apps like ChatGPT and claude.ai; the tunnel's https origin
+  --tunnel               start a free Cloudflare quick tunnel (needs cloudflared) and use its URL
+                         as --public-url; it changes on every start
   --admin                admin UI on 127.0.0.1; its URL and login token go to stderr and to
                          $XDG_RUNTIME_DIR/kordn/admin-<pid>.json
   --admin-port <n>       admin UI port (default 0: any free port)
@@ -82,6 +87,7 @@ interface Options {
   port: number;
   allowedHosts: string[];
   publicUrl?: URL;
+  tunnel: boolean;
   admin: boolean;
   adminPort: number;
   help: boolean;
@@ -142,6 +148,7 @@ function parse(argv: string[]): Options {
         port: { type: 'string' },
         'allowed-host': { type: 'string', multiple: true },
         'public-url': { type: 'string' },
+        tunnel: { type: 'boolean', default: false },
         admin: { type: 'boolean', default: false },
         'admin-port': { type: 'string' },
         help: { type: 'boolean', short: 'h', default: false },
@@ -159,6 +166,12 @@ function parse(argv: string[]): Options {
     throw new UsageError('--public-url and --guardian conflict: OAuth state lives where the guardian runs');
   }
   if (!values.http && values['public-url'] !== undefined) throw new UsageError('--public-url needs --http');
+  if (values.tunnel) {
+    if (!values.http) throw new UsageError('--tunnel needs --http');
+    if (values['public-url'] !== undefined) throw new UsageError('--tunnel and --public-url conflict: the tunnel gives the public URL');
+    if (values.guardian !== undefined) throw new UsageError('--tunnel and --guardian conflict: OAuth state lives where the guardian runs');
+    if (values.port === '0') throw new UsageError('--tunnel needs a fixed --port');
+  }
   if (!values.http && (values.port !== undefined || values['allowed-host'] !== undefined)) {
     throw new UsageError('--port and --allowed-host need --http');
   }
@@ -172,6 +185,7 @@ function parse(argv: string[]): Options {
     port: values.port === undefined ? DEFAULT_PORT : portOption(values.port, '--port'),
     allowedHosts: (values['allowed-host'] ?? []).map(allowedHost),
     publicUrl: values['public-url'] === undefined ? undefined : publicUrlOption(values['public-url']),
+    tunnel: values.tunnel,
     admin: values.admin,
     adminPort: adminPortOption(values),
     help: values.help,
@@ -330,6 +344,18 @@ function warnOnPortMismatch(publicUrl: URL, port: number): void {
   }
 }
 
+/** The --http token kept in the data dir, made on first use. */
+function savedToken(path: string): string {
+  try {
+    return readFileSync(path, 'utf8').trim();
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+  }
+  const token = randomBytes(32).toString('hex');
+  writeFileSync(path, `${token}\n`, { mode: 0o600, flag: 'wx' });
+  return token;
+}
+
 async function serve(options: Options, env: NodeJS.ProcessEnv): Promise<void> {
   let agentId: string;
   let handleCall: Guardian['handleCall'];
@@ -345,9 +371,14 @@ async function serve(options: Options, env: NodeJS.ProcessEnv): Promise<void> {
     agentId = policy.agentId;
     handleCall = (agent, tool, args) => local.handleCall(agent, tool, args);
   }
+  // In Contain mode the guardian owns the data dir.
+  const dataDir = guardian ? (options.data ?? (await import('./local-guardian.js')).defaultDataDir()) : undefined;
+  // Without KORDN_TOKEN, --http makes a token and keeps it, so it stays the same across restarts.
+  let token = env.KORDN_TOKEN ?? '';
+  const tokenFile = options.http && env.KORDN_TOKEN === undefined && dataDir ? join(dataDir, 'http-token') : undefined;
+  if (tokenFile) token = savedToken(tokenFile);
   // Before anything OAuth-related is opened, so a bad token leaves no oauth.sqlite behind.
-  const token = env.KORDN_TOKEN ?? '';
-  if (options.http && options.publicUrl && token.length < MIN_TOKEN_LENGTH) {
+  if (options.http && (options.publicUrl || options.tunnel) && token.length < MIN_TOKEN_LENGTH) {
     throw new Error(`KORDN_TOKEN must be set to a random secret of at least ${MIN_TOKEN_LENGTH} characters`);
   }
   const factory = () => createMcpServer({ agentId, handleCall });
@@ -357,11 +388,17 @@ async function serve(options: Options, env: NodeJS.ProcessEnv): Promise<void> {
   if (options.http || options.admin) {
     onStopSignal(() => void Promise.allSettled(closers.map((close) => close())).finally(() => process.exit(0)));
   }
+  let publicUrl = options.publicUrl;
+  if (options.tunnel) {
+    const tunnel = await startQuickTunnel(options.port);
+    closers.push(async () => tunnel.close());
+    publicUrl = tunnel.url;
+  }
   // After openGuardian, which created the 0700 data dir; before the admin UI, which will share it.
   let oauthStore: OAuthStore | undefined;
-  if (options.publicUrl && guardian) {
-    const { defaultDataDir } = await import('./local-guardian.js');
-    const store = OAuthStore.open(join(options.data ?? defaultDataDir(), 'oauth.sqlite'));
+  if (publicUrl && dataDir) {
+    // Imported here, after the warning filter above: it loads node:sqlite.
+    const store = (await import('./oauth/store.js')).OAuthStore.open(join(dataDir, 'oauth.sqlite'));
     oauthStore = store;
     closers.push(async () => store.close());
   }
@@ -378,10 +415,10 @@ async function serve(options: Options, env: NodeJS.ProcessEnv): Promise<void> {
     let http;
     try {
       const oauth =
-        oauthStore && options.publicUrl && guardian
+        oauthStore && publicUrl && guardian
           ? createOAuthServer({
               store: oauthStore,
-              publicUrl: options.publicUrl,
+              publicUrl,
               ownerToken: token,
               audit: (event, app) => void guardian.recordOAuthEvent(event, app),
             })
@@ -395,10 +432,11 @@ async function serve(options: Options, env: NodeJS.ProcessEnv): Promise<void> {
     const server = http;
     closers.push(() => server.close());
     process.stderr.write(`kordn: serving MCP at ${http.url}\n`);
-    if (options.publicUrl) {
-      warnOnPortMismatch(options.publicUrl, options.port);
-      process.stderr.write(`kordn: OAuth on for ${options.publicUrl.origin}/mcp\n`);
+    if (publicUrl) {
+      warnOnPortMismatch(publicUrl, options.port);
+      process.stderr.write(`kordn: OAuth on for ${publicUrl.origin}/mcp\n`);
     }
+    if (tokenFile) process.stderr.write(`kordn: token ${token} (kept in ${tokenFile}; KORDN_TOKEN overrides it)\n`);
     return;
   }
 
