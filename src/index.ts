@@ -17,12 +17,12 @@ import { createOAuthServer, parsePublicUrl } from './oauth/server.js';
 import type { OAuthStore } from './oauth/store.js';
 import { assertContainPlatform, formatReport, reapStaleContainers, runContain } from './sandbox.js';
 import { Policy } from './schema.js';
-import { startQuickTunnel } from './tunnel.js';
+import { startNgrok, startQuickTunnel } from './tunnel.js';
 
 // The kordn CLI and the only place arguments are parsed. stdout belongs to the MCP
 // stdio transport, so everything human-readable goes to stderr.
 
-const USAGE = `usage: kordn [--policy <path>] [--data <dir>] [--bank <path> [--live]] [--guardian <socket>] [--http [--port <n>] [--allowed-host <name>]... [--public-url <url> | --tunnel]] [--admin [--admin-port <n>]]
+const USAGE = `usage: kordn [--policy <path>] [--data <dir>] [--bank <path> [--live]] [--guardian <socket>] [--http [--port <n>] [--allowed-host <name>]... [--public-url <url> | --tunnel | --ngrok <domain>]] [--admin [--admin-port <n>]]
        kordn setup [--data <dir>]
        kordn contain [--image <ref>] [--policy <path>] [--data <dir>] [--bank <path> [--live]] [--require-contain] [--admin [--admin-port <n>]] [-- <command>...]
 
@@ -45,6 +45,8 @@ const USAGE = `usage: kordn [--policy <path>] [--data <dir>] [--bank <path> [--l
   --public-url <url>     turn on OAuth for apps like ChatGPT and claude.ai; the tunnel's https origin
   --tunnel               start a free Cloudflare quick tunnel (needs cloudflared) and use its URL
                          as --public-url; it changes on every start
+  --ngrok <domain>       start ngrok on your static domain (e.g. name.ngrok-free.app) and use it as
+                         --public-url; it stays the same, and ngrok is restarted if it stops
   --admin                admin UI on 127.0.0.1; its URL and login token go to stderr and to
                          $XDG_RUNTIME_DIR/kordn/admin-<pid>.json
   --admin-port <n>       admin UI port (default 0: any free port)
@@ -107,6 +109,7 @@ interface Options {
   allowedHosts: string[];
   publicUrl?: URL;
   tunnel: boolean;
+  ngrok?: URL;
   admin: boolean;
   adminPort: number;
   help: boolean;
@@ -151,6 +154,13 @@ function publicUrlOption(value: string): URL {
   return url;
 }
 
+/** The static domain, bare (name.ngrok-free.app) or as an https origin. */
+function ngrokOption(value: string): URL {
+  const url = parsePublicUrl(/^https?:\/\//.test(value) ? value : `https://${value}`);
+  if (!url || url.protocol !== 'https:') throw new UsageError('--ngrok takes your ngrok domain, e.g. name.ngrok-free.app');
+  return url;
+}
+
 function parse(argv: string[]): Options {
   const { values } = parseOrUsage(() =>
     parseArgs({
@@ -168,6 +178,7 @@ function parse(argv: string[]): Options {
         'allowed-host': { type: 'string', multiple: true },
         'public-url': { type: 'string' },
         tunnel: { type: 'boolean', default: false },
+        ngrok: { type: 'string' },
         admin: { type: 'boolean', default: false },
         'admin-port': { type: 'string' },
         help: { type: 'boolean', short: 'h', default: false },
@@ -191,6 +202,13 @@ function parse(argv: string[]): Options {
     if (values.guardian !== undefined) throw new UsageError('--tunnel and --guardian conflict: OAuth state lives where the guardian runs');
     if (values.port === '0') throw new UsageError('--tunnel needs a fixed --port');
   }
+  if (values.ngrok !== undefined) {
+    if (!values.http) throw new UsageError('--ngrok needs --http');
+    if (values.tunnel) throw new UsageError('--ngrok and --tunnel conflict: choose one');
+    if (values['public-url'] !== undefined) throw new UsageError('--ngrok and --public-url conflict: ngrok gives the public URL');
+    if (values.guardian !== undefined) throw new UsageError('--ngrok and --guardian conflict: OAuth state lives where the guardian runs');
+    if (values.port === '0') throw new UsageError('--ngrok needs a fixed --port');
+  }
   if (!values.http && (values.port !== undefined || values['allowed-host'] !== undefined)) {
     throw new UsageError('--port and --allowed-host need --http');
   }
@@ -205,6 +223,7 @@ function parse(argv: string[]): Options {
     allowedHosts: (values['allowed-host'] ?? []).map(allowedHost),
     publicUrl: values['public-url'] === undefined ? undefined : publicUrlOption(values['public-url']),
     tunnel: values.tunnel,
+    ngrok: values.ngrok === undefined ? undefined : ngrokOption(values.ngrok),
     admin: values.admin,
     adminPort: adminPortOption(values),
     help: values.help,
@@ -416,8 +435,8 @@ async function serve(options: Options, env: NodeJS.ProcessEnv): Promise<void> {
     onStopSignal(() => void Promise.allSettled(closers.map((close) => close())).finally(() => process.exit(0)));
   }
   let publicUrl = options.publicUrl;
-  if (options.tunnel) {
-    const tunnel = await startQuickTunnel(options.port);
+  if (options.tunnel || options.ngrok) {
+    const tunnel = options.ngrok ? await startNgrok(options.port, options.ngrok) : await startQuickTunnel(options.port);
     closers.push(async () => tunnel.close());
     publicUrl = tunnel.url;
   }

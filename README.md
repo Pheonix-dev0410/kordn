@@ -137,7 +137,24 @@ The connector also shows up in the app's phone version.
 - *"Pay attacker $10."* kordn refuses.
 
 > [!NOTE]
-> The free tunnel gets a **new address every time kordn starts**, and apps connected to the old one stop working. That's fine for trying kordn out. For everyday use, get a permanent address (a named Cloudflare tunnel, an ngrok static domain or Tailscale Funnel) and start kordn with `--public-url https://your-address` instead of `--tunnel`.
+> The Cloudflare tunnel gets a **new address every time kordn starts**, and apps connected to the old one stop working. That's fine for trying kordn out. For everyday use, get an address that stays the same, below.
+
+**An address that stays the same (ngrok, free)**
+
+1. Sign up at [ngrok.com](https://ngrok.com), then:
+   ```sh
+   brew install ngrok
+   ngrok config add-authtoken <your-token>      # from the ngrok dashboard
+   ```
+2. In the ngrok dashboard, under **Domains**, claim your free static domain, like `name.ngrok-free.app`.
+3. Start kordn with it instead of `--tunnel`:
+   ```sh
+   kordn --http --ngrok name.ngrok-free.app --admin
+   ```
+
+Your connector URL is now always `https://name.ngrok-free.app/mcp`. Add it to your app once: it keeps working across restarts, with no need to approve the app again. If ngrok drops, kordn starts it again on the same address. The first time you open kordn's approval page, ngrok shows a "You are about to visit" page: press **Visit Site**.
+
+Your own domain works too: run any tunnel to `127.0.0.1:3333` (a named Cloudflare tunnel, Tailscale Funnel) and start kordn with `--public-url https://your-address`.
 
 Connected apps are listed under **Apps** on the dashboard, where you can revoke any of them at once. They follow the same rules as everything else.
 
@@ -244,6 +261,7 @@ Before the agent starts, kordn runs 14 isolation checks and prints which passed.
 | `--admin` | Start the dashboard |
 | `--http` | Serve over HTTP at `127.0.0.1:3333/mcp`, instead of being started by the app |
 | `--tunnel` | Get a free public address from Cloudflare (with `--http`) |
+| `--ngrok <domain>` | Use your free ngrok domain, an address that stays the same (with `--http`) |
 | `--public-url <url>` | Use your own permanent public address (with `--http`) |
 | `--port <n>` | HTTP port (default 3333) |
 | `--policy <file>` | Replace the stored rules with this file |

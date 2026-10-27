@@ -801,6 +801,92 @@ exec sleep 30
   });
 });
 
+describe('--ngrok', () => {
+  /**
+   * A stand-in ngrok on PATH: logs JSON like ngrok, records its arguments and how often it
+   * started. FAKE_NGROK=auth fails like a missing authtoken; drop exits soon after the first start.
+   */
+  function fakeNgrok(): { path: string; dir: string } {
+    const dir = tempDir();
+    writeFileSync(join(dir, 'ngrok'), `#!/bin/sh
+echo "$@" > '${dir}/args'
+n=$(cat '${dir}/count' 2>/dev/null || echo 0); n=$((n+1)); echo $n > '${dir}/count'
+echo $$ > '${dir}/pid'
+if [ "$FAKE_NGROK" = auth ]; then
+  printf '%s\\n' '{"err":"authentication failed: This ngrok session is not authenticated.\\r\\n\\r\\nERR_NGROK_4018\\r\\n","lvl":"crit","msg":"command failed"}'
+  exit 1
+fi
+url=""; prev=""; for a in "$@"; do [ "$prev" = "--url" ] && url="$a"; prev="$a"; done
+echo '{"addr":"127.0.0.1:4040","lvl":"info","msg":"starting web service"}'
+echo "{\\"lvl\\":\\"info\\",\\"msg\\":\\"started tunnel\\",\\"url\\":\\"$url\\"}"
+if [ "$FAKE_NGROK" = drop ] && [ "$n" = 1 ]; then sleep 1; exit 1; fi
+exec sleep 30
+`, { mode: 0o755 });
+    return { path: `${dir}:${process.env.PATH ?? ''}`, dir };
+  }
+
+  async function freePort(): Promise<number> {
+    const probe = createServer();
+    await new Promise<void>((resolve) => probe.listen(0, '127.0.0.1', resolve));
+    const { port } = probe.address() as { port: number };
+    await new Promise<void>((resolve) => probe.close(() => resolve()));
+    return port;
+  }
+
+  function privateDir(): string {
+    const data = tempDir();
+    chmodSync(data, 0o700);
+    return data;
+  }
+
+  it.each([
+    [['--ngrok', 'name.ngrok-free.app'], /needs --http/],
+    [['--http', '--ngrok', 'name.ngrok-free.app', '--tunnel'], /conflict/],
+    [['--http', '--ngrok', 'name.ngrok-free.app', '--public-url', 'https://x.example'], /conflict/],
+    [['--http', '--ngrok', 'name.ngrok-free.app', '--port', '0'], /fixed --port/],
+    [['--http', '--ngrok', 'http://name.ngrok-free.app'], /takes your ngrok domain/],
+    [['--http', '--ngrok', 'name.ngrok-free.app/path'], /takes your ngrok domain/],
+  ])('rejects %j', async (args, message) => {
+    const { code, stderr } = await run(args, { KORDN_TOKEN: 'x'.repeat(32) });
+    expect(code).toBe(2);
+    expect(stderr).toMatch(message);
+  });
+
+  it('says how to get ngrok, and how to add the authtoken', async () => {
+    const missing = await run(['--http', '--ngrok', 'name.ngrok-free.app', '--port', '45872', '--data', privateDir()], { PATH: tempDir() });
+    expect(missing.code).toBe(1);
+    expect(missing.stderr).toMatch(/--ngrok needs ngrok: brew install ngrok/);
+    const { path } = fakeNgrok();
+    const unauthenticated = await run(['--http', '--ngrok', 'name.ngrok-free.app', '--port', '45873', '--data', privateDir()], { PATH: path, FAKE_NGROK: 'auth' });
+    expect(unauthenticated.code).toBe(1);
+    expect(unauthenticated.stderr).toContain('ngrok needs your authtoken: sign up at dashboard.ngrok.com, then run ngrok config add-authtoken <token>');
+  });
+
+  it('serves OAuth on your domain, with the inspector off, and stops ngrok on exit', async () => {
+    const { path, dir } = fakeNgrok();
+    const port = await freePort();
+    const kordn = spawnCli(['--http', '--ngrok', 'https://name.ngrok-free.app/', '--port', String(port), '--data', privateDir()], { PATH: path });
+    await kordn.waitForStderr(/kordn: OAuth on for https:\/\/name\.ngrok-free\.app\/mcp\n/);
+    expect(readFileSync(join(dir, 'args'), 'utf8').trim()).toBe(
+      `http 127.0.0.1:${port} --url https://name.ngrok-free.app --inspect=false --log stdout --log-format json`,
+    );
+    const pid = Number(readFileSync(join(dir, 'pid'), 'utf8'));
+    kordn.child.kill('SIGTERM');
+    expect((await kordn.exited).code).toBe(0);
+    await expect.poll(() => { try { process.kill(pid, 0); return true; } catch { return false; } }).toBe(false);
+  });
+
+  it('starts ngrok again on the same domain when it stops', async () => {
+    const { path, dir } = fakeNgrok();
+    const kordn = spawnCli(['--http', '--ngrok', 'name.ngrok-free.app', '--port', String(await freePort()), '--data', privateDir()], { PATH: path, FAKE_NGROK: 'drop' });
+    await kordn.waitForStderr(/kordn: ngrok stopped; starting it again on https:\/\/name\.ngrok-free\.app\n/);
+    await kordn.waitForStderr(/kordn: ngrok is back\n/);
+    expect(readFileSync(join(dir, 'count'), 'utf8').trim()).toBe('2');
+    kordn.child.kill('SIGTERM');
+    expect((await kordn.exited).code).toBe(0);
+  });
+});
+
 describe('--public-url', () => {
   it.each([
     [['--public-url', 'https://x.example'], /needs --http/],
