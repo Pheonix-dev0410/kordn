@@ -152,6 +152,8 @@ export interface PageContext {
   errors?: readonly string[];
   /** Milliseconds since the epoch, for "5 min ago". */
   now?: number;
+  /** A real account, not a test one: a warning on every page. */
+  live?: boolean;
 }
 
 // ---- Formatting ----
@@ -234,7 +236,8 @@ export function layout(ctx: PageContext, title: string, body: Html, current?: Na
   const errors = ctx.errors?.length
     ? html`<div class="error" role="alert"><ul>${ctx.errors.map((e) => html`<li>${e}</li>`)}</ul></div>`
     : null;
-  const banners = html`${ctx.revoked ? html`<p class="banner bad" role="alert">Agent stopped. New calls and approvals are refused.</p>` : null}
+  const banners = html`${ctx.live ? html`<p class="banner bad" role="note">Live: this is a real account, and payments move real money.</p>` : null}
+${ctx.revoked ? html`<p class="banner bad" role="alert">Agent stopped. New calls and approvals are refused.</p>` : null}
 ${ctx.flash ? html`<p class="banner ok" role="status">${ctx.flash}</p>` : null}
 ${errors}`;
   const head = html`<!doctype html>

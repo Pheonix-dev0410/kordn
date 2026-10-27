@@ -11,7 +11,7 @@ You can let an AI assistant like ChatGPT, Claude or Cursor check your balance, r
 ```
 
 > [!WARNING]
-> **kordn is an experimental alpha.** It runs on your own computer, and you use it at your own risk. There is no hosted service and no warranty ([LICENSE](LICENSE)). Don't use it with real money yet.
+> **kordn is an experimental alpha.** It runs on your own computer, and you use it at your own risk. There is no hosted service and no warranty ([LICENSE](LICENSE)). It can guard real money, but try it with test accounts first, and keep real-money limits small.
 
 ## What kordn does
 
@@ -197,10 +197,12 @@ Pressing **Stop** is permanent for that agent. To start over, delete the data fo
 ## Use PayPal, Stripe or your bank
 
 Run `kordn setup` and choose:
-- **PayPal or Stripe** to let the AI pay. It asks for your test keys and checks them.
+- **PayPal or Stripe** to let the AI pay. Choose **Test** (pretend money) or **Live** (your real account). It asks for your keys and checks them.
 - **Plaid** to let the AI read a bank account: the balance and statements, never payments. You sign in to your bank on Plaid's page, never in kordn or the AI. Plaid's sandbox comes with a test bank that has a planted prompt injection in its statement, so you can watch kordn flag it.
 
 [docs/providers.md](docs/providers.md) shows where to get the keys, and how each one behaves.
+
+**Real money.** Choosing Live asks you to type `real money` to confirm, then suggests small limits: $10 per payment, $20 a day, and every payment waits for your approval on the dashboard. kordn says LIVE when it starts, and the dashboard shows it on every page. You can raise the limits later, under Limits.
 
 ## What the AI can do
 
