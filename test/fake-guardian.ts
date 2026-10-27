@@ -7,6 +7,7 @@ import type {
   PendingApproval,
   PolicyUpdateResult,
 } from '../src/guardian-api.js';
+import { cleanAppText } from '../src/guardian.js';
 import { requestHash } from '../src/hash.js';
 import { CHECKING_ACCOUNT, FIXTURE_EPOCH_MS, TRANSACTIONS, transactionDate } from '../src/mock-bank.js';
 import {
@@ -309,6 +310,15 @@ export function createFakeGuardian(options: FakeGuardianOptions): Guardian {
       // Never rejects, like handleCall: the socket server must not have to guard against us.
       try {
         log('action.attempted', policy.agentId, { metadata: { reason: 'connection_limit', refused: count } });
+      } catch {
+        // Nothing to fall back to: the log is the only place this goes.
+      }
+    },
+
+    async recordOAuthEvent(event, app) {
+      // Never rejects, like recordRefusedConnection.
+      try {
+        log(event, policy.agentId, { metadata: { client: cleanAppText(app.client), redirectHost: cleanAppText(app.redirectHost) } });
       } catch {
         // Nothing to fall back to: the log is the only place this goes.
       }

@@ -1,5 +1,6 @@
 import { createHash } from 'node:crypto';
 import type { PendingApproval } from '../guardian-api.js';
+import type { ConnectedApp } from '../oauth/store.js';
 import { AmountMinor, type AuditEvent } from '../schema.js';
 import { formatUsd, POLICY_FIELDS, type PolicyFormValues } from './forms.js';
 import { Html, html } from './html.js';
@@ -62,6 +63,8 @@ export interface PageContext {
   csrf?: string;
   /** The agent's revoked state, shown on every logged-in page. */
   revoked?: boolean;
+  /** OAuth is on: adds the Apps link. */
+  apps?: boolean;
   flash?: string | null;
   errors?: readonly string[];
 }
@@ -70,6 +73,7 @@ export function layout(ctx: PageContext, title: string, body: Html): Html {
   const nav = ctx.csrf
     ? html`<nav>
         <a href="/approvals">Approvals</a>
+        ${ctx.apps ? html`<a href="/apps">Apps</a>` : null}
         <a href="/activity">Activity</a>
         <a href="/policy">Policy</a>
         <a href="/stop">Stop</a>
@@ -188,12 +192,45 @@ export function approvalsPage(ctx: PageContext & { csrf: string }, pending: read
   );
 }
 
+export function appsPage(ctx: PageContext & { csrf: string }, apps: readonly ConnectedApp[]): Html {
+  const rows = apps.map(
+    (a) => html`<tr>
+      <td>${a.name}</td>
+      <td><code>${a.redirectHost}</code></td>
+      <td>${new Date(a.approvedAt).toISOString()}</td>
+      <td>${a.lastUsedAt === null ? 'never' : new Date(a.lastUsedAt).toISOString()}</td>
+      <td>
+        <form class="inline" method="post" action="/apps/revoke">
+          <input type="hidden" name="csrf" value="${ctx.csrf}">
+          <input type="hidden" name="client" value="${a.clientId}">
+          <button>Revoke</button>
+        </form>
+      </td>
+    </tr>`,
+  );
+  return layout(
+    ctx,
+    'Connected apps',
+    html`<p>Apps you approved to use this kordn over OAuth. Revoking one ends its access at once; it has to
+      be approved again to reconnect.</p>
+    ${
+      apps.length === 0
+        ? html`<p>No apps are connected.</p>`
+        : html`<table>
+          <tr><th>Name</th><th>Redirect host</th><th>Approved</th><th>Last used</th><th></th></tr>
+          ${rows}
+        </table>`
+    }`,
+  );
+}
+
 export const ACTIVITY_FILTERS = {
   allowed: ['policy.allowed'],
   denied: ['policy.denied'],
   pending: ['policy.require_approval'],
   succeeded: ['transfer.succeeded'],
   unknown: ['transfer.unknown'],
+  apps: ['oauth.approved', 'oauth.denied', 'oauth.revoked', 'oauth.refresh_reused'],
 } as const satisfies Record<string, readonly AuditEvent['event'][]>;
 
 export type ActivityType = keyof typeof ACTIVITY_FILTERS;

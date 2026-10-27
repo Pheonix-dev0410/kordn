@@ -27,6 +27,8 @@ export type ApprovalResult = { ok: true } | { ok: false; code: ApprovalError };
 
 export type PolicyUpdateResult = { ok: true; version: number } | { ok: false; code: 'VERSION_CONFLICT' | 'INVALID_POLICY' };
 
+export type OAuthAuditEvent = 'oauth.approved' | 'oauth.denied' | 'oauth.revoked' | 'oauth.refresh_reused';
+
 export interface ActivityFilter {
   events?: AuditEvent['event'][];
   /** A positive integer, default 100, capped at 1000. listActivity rejects anything else. */
@@ -67,4 +69,7 @@ export interface Guardian {
    * away for exceeding its connection limit. Logs one audit event. Never rejects.
    */
   recordRefusedConnection(refused?: number): Promise<void>;
+
+  /** Logs one audit event as the guardian's own agent. Never rejects. */
+  recordOAuthEvent(event: OAuthAuditEvent, app: { client: string; redirectHost: string }): Promise<void>;
 }
