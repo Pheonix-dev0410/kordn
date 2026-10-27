@@ -86,11 +86,14 @@ describe('kordn CLI', () => {
     expect((await client.listTools()).tools).toHaveLength(4);
     expect((await client.callTool(balance)).structuredContent).toMatchObject({ currency: 'USD' });
     expect((await client.callTool({ name: 'shell', arguments: {} })).structuredContent).toEqual({
-      error: { code: 'UNKNOWN_ACTION' },
+      error: { code: 'UNKNOWN_ACTION', hint: expect.any(String) },
     });
+    // Too far back says so, and how to fix it.
+    const old = { name: 'af_list_transactions', arguments: { resourceId: 'mock-bank:checking-01', fromDate: '2000-01-01', limit: 5 } };
+    expect((await client.callTool(old)).structuredContent).toEqual({ error: { code: 'LOOKBACK_LIMIT', hint: expect.stringContaining('Use a later date') } });
     for (const params of [{ name: 'shell', arguments: 'str' }, { name: 42 }]) {
       const malformed = await client.request({ method: 'tools/call', params: params as never });
-      expect(malformed.structuredContent).toEqual({ error: { code: 'UNKNOWN_ACTION' } });
+      expect(malformed.structuredContent).toEqual({ error: { code: 'UNKNOWN_ACTION', hint: expect.any(String) } });
     }
   });
 
@@ -102,7 +105,7 @@ describe('kordn CLI', () => {
       name: 'af_propose_transfer',
       arguments: { resourceId: policy.resourceId, payeeId: 'utilities', amountMinor: 100, currency: 'USD', idempotencyKey: 'key-00000001' },
     });
-    expect(result.structuredContent).toEqual({ error: { code: 'CAPABILITY_DISABLED' } });
+    expect(result.structuredContent).toEqual({ error: { code: 'CAPABILITY_DISABLED', hint: expect.any(String) } });
   });
 
   it('keeps the ledger across restarts, so limits still hold after one', async () => {
@@ -117,7 +120,7 @@ describe('kordn CLI', () => {
     const second = await stdioClient([], undefined, state);
     // A retry of an earlier key reports that transfer instead of sending another.
     expect((await second.callTool(transfer(1))).structuredContent).toMatchObject({ state: 'succeeded' });
-    expect((await second.callTool(transfer(4))).structuredContent).toEqual({ error: { code: 'FREQUENCY_LIMIT' } });
+    expect((await second.callTool(transfer(4))).structuredContent).toEqual({ error: { code: 'FREQUENCY_LIMIT', hint: expect.any(String) } });
   });
 
   it('refuses an invalid policy', async () => {
@@ -221,10 +224,10 @@ describe('kordn CLI', () => {
       expect((await client.callTool(balance)).structuredContent).toMatchObject({ currency: 'USD' });
       expect((await client.callTool({ name: 'af_add_payee', arguments: { payeeId: 'x' } })).isError).toBe(true);
       // No arguments at all: the frame must still be valid so the guardian logs it.
-      expect((await client.callTool({ name: 'shell' })).structuredContent).toEqual({ error: { code: 'UNKNOWN_ACTION' } });
+      expect((await client.callTool({ name: 'shell' })).structuredContent).toEqual({ error: { code: 'UNKNOWN_ACTION', hint: expect.any(String) } });
       for (const params of [{ name: 'shell', arguments: 'str' }, { name: 42 }]) {
         const malformed = await client.request({ method: 'tools/call', params: params as never });
-        expect(malformed.structuredContent).toEqual({ error: { code: 'UNKNOWN_ACTION' } });
+        expect(malformed.structuredContent).toEqual({ error: { code: 'UNKNOWN_ACTION', hint: expect.any(String) } });
       }
       const denied = await guardian.listActivity({ events: ['policy.denied'] });
       expect(denied).toHaveLength(4);
@@ -236,7 +239,7 @@ describe('kordn CLI', () => {
       expect((await client.listTools()).tools).toHaveLength(4);
       const result = await client.callTool(balance);
       expect(result.isError).toBe(true);
-      expect(result.structuredContent).toEqual({ error: { code: 'INTERNAL_UNAVAILABLE' } });
+      expect(result.structuredContent).toEqual({ error: { code: 'INTERNAL_UNAVAILABLE', hint: expect.any(String) } });
     });
   });
 });
@@ -685,7 +688,7 @@ describe('kordn setup', () => {
 
     const c = await client(config, state);
     const id = 'mock-bank:checking-01';
-    expect((await c.callTool(transfer(id, 'utilities', 5_001, 'setup-key-01'))).structuredContent).toEqual({ error: { code: 'SINGLE_LIMIT' } });
+    expect((await c.callTool(transfer(id, 'utilities', 5_001, 'setup-key-01'))).structuredContent).toEqual({ error: { code: 'SINGLE_LIMIT', hint: expect.any(String) } });
     expect((await c.callTool(transfer(id, 'utilities', 3_001, 'setup-key-02'))).structuredContent).toMatchObject({ state: 'pending_approval' });
     expect((await c.callTool(transfer(id, 'landlord', 1_000, 'setup-key-03'))).structuredContent).toMatchObject({ state: 'succeeded' });
   });

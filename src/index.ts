@@ -12,7 +12,7 @@ import { type ConnectedApps, startAdminServer } from './admin/server.js';
 import type { Guardian } from './guardian-api.js';
 import { createGuardianClient } from './guardian-client.js';
 import { MIN_TOKEN_LENGTH, serveHttp } from './http.js';
-import { createMcpServer } from './mcp-server.js';
+import { createMcpServer, type ReadLimits } from './mcp-server.js';
 import { createOAuthServer, parsePublicUrl } from './oauth/server.js';
 import type { OAuthStore } from './oauth/store.js';
 import { assertContainPlatform, formatReport, reapStaleContainers, runContain } from './sandbox.js';
@@ -380,6 +380,7 @@ async function serve(options: Options, env: NodeJS.ProcessEnv): Promise<void> {
   let handleCall: Guardian['handleCall'];
   let guardian: Guardian | undefined;
   let resourceId: string | undefined;
+  let reads: ReadLimits | undefined;
   let live = false;
   if (options.guardian !== undefined) {
     agentId = SOCKET_BOUND_AGENT;
@@ -394,6 +395,7 @@ async function serve(options: Options, env: NodeJS.ProcessEnv): Promise<void> {
     guardian = local;
     agentId = policy.agentId;
     resourceId = policy.resourceId;
+    reads = policy.reads;
     handleCall = (agent, tool, args) => local.handleCall(agent, tool, args);
   }
   // In Contain mode the guardian owns the data dir.
@@ -406,7 +408,7 @@ async function serve(options: Options, env: NodeJS.ProcessEnv): Promise<void> {
   if (options.http && (options.publicUrl || options.tunnel) && token.length < MIN_TOKEN_LENGTH) {
     throw new Error(`KORDN_TOKEN must be set to a random secret of at least ${MIN_TOKEN_LENGTH} characters`);
   }
-  const factory = () => createMcpServer({ agentId, handleCall, resourceId });
+  const factory = () => createMcpServer({ agentId, handleCall, resourceId, reads });
 
   // Installed before anything starts, so a signal during startup still shuts down what's up.
   const closers: (() => Promise<void>)[] = [];
