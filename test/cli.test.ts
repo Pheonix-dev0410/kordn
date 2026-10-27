@@ -159,13 +159,31 @@ describe('kordn CLI', () => {
     expect(stderr).toMatch(/usage: kordn/);
   });
 
-  it.each([
-    ['without KORDN_TOKEN', {}],
-    ['with a 31-character KORDN_TOKEN', { KORDN_TOKEN: 'x'.repeat(31) }],
-  ])('refuses --http %s', async (_name, env) => {
-    const { code, stderr } = await run(['--http', '--port', '0'], env);
+  it('refuses --http with a 31-character KORDN_TOKEN', async () => {
+    const { code, stderr } = await run(['--http', '--port', '0'], { KORDN_TOKEN: 'x'.repeat(31) });
     expect(code).toBe(1);
     expect(stderr).toMatch(/KORDN_TOKEN must be set to a random secret of at least 32 characters/);
+  });
+
+  it('makes an --http token without KORDN_TOKEN and keeps it across restarts', async () => {
+    const data = tempDir();
+    chmodSync(data, 0o700);
+    const file = join(data, 'http-token');
+    const tokens: string[] = [];
+    for (let i = 0; i < 2; i++) {
+      const kordn = spawnCli(['--http', '--port', '0', '--data', data], {});
+      const [, token, path] = await kordn.waitForStderr(/kordn: token ([0-9a-f]{64}) \(kept in (.+); KORDN_TOKEN overrides it\)\n/);
+      expect(path).toBe(file);
+      const [url] = /http:\/\/127\.0\.0\.1:\d+\/mcp/.exec(kordn.stderr())!;
+      const client = new Client({ name: 'test', version: '0.0.0' });
+      await client.connect(new StreamableHTTPClientTransport(new URL(url), { requestInit: { headers: { authorization: `Bearer ${token}` } } }));
+      await client.close();
+      tokens.push(token!);
+      kordn.child.kill('SIGTERM');
+      await kordn.exited;
+    }
+    expect(tokens[1]).toBe(tokens[0]);
+    expect(statSync(file).mode & 0o777).toBe(0o600);
   });
 
   it('serves --http with the token', async () => {
@@ -624,6 +642,56 @@ describe.runIf(process.platform === 'linux')('kordn contain (fake docker)', () =
     expect(code).toBe(1);
     expect(stderr).toMatch(/^kordn: .*docker/i);
     expect(stderr).not.toMatch(/\n\s+at /);
+  });
+});
+
+describe('--tunnel', () => {
+  /** A stand-in cloudflared on PATH: prints a quick-tunnel URL and stays up, recording its pid. */
+  function fakeCloudflared(): { path: string; pidFile: string } {
+    const dir = tempDir();
+    const pidFile = join(dir, 'pid');
+    writeFileSync(join(dir, 'cloudflared'), `#!/bin/sh
+echo $$ > '${pidFile}'
+echo 'INF Requesting new quick Tunnel on https://api.trycloudflare.com...' >&2
+echo 'INF |  https://four-words-in-here.trycloudflare.com  |' >&2
+exec sleep 30
+`, { mode: 0o755 });
+    return { path: `${dir}:${process.env.PATH ?? ''}`, pidFile };
+  }
+
+  it.each([
+    [['--tunnel'], /needs --http/],
+    [['--http', '--tunnel', '--public-url', 'https://x.example'], /conflict/],
+    [['--http', '--tunnel', '--guardian', '/tmp/s'], /conflict/],
+    [['--http', '--tunnel', '--port', '0'], /fixed --port/],
+  ])('rejects %j', async (args, message) => {
+    const { code, stderr } = await run(args, { KORDN_TOKEN: 'x'.repeat(32) });
+    expect(code).toBe(2);
+    expect(stderr).toMatch(message);
+  });
+
+  it('says how to get cloudflared when it is missing', async () => {
+    const { code, stderr } = await run(['--http', '--tunnel', '--port', '45871', '--data', tempDir()], { PATH: tempDir() });
+    expect(code).toBe(1);
+    expect(stderr).toMatch(/--tunnel needs cloudflared: brew install cloudflared/);
+  });
+
+  it("serves OAuth on the tunnel's URL and stops cloudflared on exit", async () => {
+    const { path, pidFile } = fakeCloudflared();
+    const probe = createServer();
+    await new Promise<void>((resolve) => probe.listen(0, '127.0.0.1', resolve));
+    const { port } = probe.address() as { port: number };
+    await new Promise<void>((resolve) => probe.close(() => resolve()));
+    const data = tempDir();
+    chmodSync(data, 0o700);
+    const kordn = spawnCli(['--http', '--tunnel', '--port', String(port), '--data', data], { PATH: path });
+    await kordn.waitForStderr(/kordn: OAuth on for https:\/\/four-words-in-here\.trycloudflare\.com\/mcp\n/);
+    await kordn.waitForStderr(/kordn: token [0-9a-f]{64}/);
+    const pid = Number(readFileSync(pidFile, 'utf8'));
+    kordn.child.kill('SIGTERM');
+    expect((await kordn.exited).code).toBe(0);
+    expect(kordn.stderr()).not.toContain('tunnel stopped');
+    await expect.poll(() => { try { process.kill(pid, 0); return true; } catch { return false; } }).toBe(false);
   });
 });
 

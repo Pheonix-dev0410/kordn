@@ -98,6 +98,26 @@ describe('HTTP transport', () => {
     expect(url).toMatch(/^http:\/\/127\.0\.0\.1:\d+\/mcp$/);
   });
 
+  it('answers with plain JSON, never an SSE stream, so tunnels without SSE work', async () => {
+    const { url } = await start();
+    const init = JSON.stringify({
+      jsonrpc: '2.0',
+      id: 1,
+      method: 'initialize',
+      params: { protocolVersion: '2025-11-25', capabilities: {}, clientInfo: { name: 't', version: '1' } },
+    });
+    for (const body of [init, listTools]) {
+      const res = await fetch(url, {
+        method: 'POST',
+        headers: { ...accept, authorization: `Bearer ${TOKEN}`, 'content-type': 'application/json', 'mcp-protocol-version': '2025-11-25' },
+        body,
+      });
+      expect(res.status).toBe(200);
+      expect(res.headers.get('content-type')).toMatch(/^application\/json/);
+      expect(await res.json()).toMatchObject({ jsonrpc: '2.0', id: 1 });
+    }
+  });
+
   it.each([
     ['no token', {}],
     ['a wrong token', { authorization: `Bearer ${TOKEN.replace('0', '1')}` }],
