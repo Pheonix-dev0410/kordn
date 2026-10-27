@@ -37,6 +37,8 @@ npm run build
 npm link        # adds the `kordn` command
 ```
 
+If `npm link` fails with `EACCES` (permission denied), your Node was installed system-wide. Run `sudo npm link` instead, or install Node with [nvm](https://github.com/nvm-sh/nvm) or Homebrew.
+
 **2. See it work.** A scripted "agent" tries the worst it can, like paying an attacker or splitting a big payment into small ones, and kordn blocks it:
 
 ```sh
@@ -72,7 +74,7 @@ Everything is saved privately in `~/.config/kordn`. Skip this step and kordn gua
 **Claude Code**
 
 ```sh
-claude mcp add kordn -- kordn
+claude mcp add kordn -- kordn --admin
 ```
 
 **Claude Desktop, Cursor and other apps with an `mcpServers` config**
@@ -80,12 +82,12 @@ claude mcp add kordn -- kordn
 ```json
 {
   "mcpServers": {
-    "kordn": { "command": "kordn" }
+    "kordn": { "command": "kordn", "args": ["--admin"] }
   }
 }
 ```
 
-If the app says it can't find `kordn`, use the full path that `which kordn` prints.
+If the app says it can't find `kordn`, use the full path that `which kordn` prints. `--admin` turns on the [dashboard](#the-dashboard), where you approve payments.
 
 ### Web and phone apps
 
