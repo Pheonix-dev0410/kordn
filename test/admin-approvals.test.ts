@@ -260,6 +260,16 @@ describe('admin activity log', () => {
     expect(all).toContain('UNAPPROVED_PAYEE');
   });
 
+  it("says what the bank answered when a call failed, escaped", async () => {
+    const fake = createFakeGuardian({ policy });
+    const failed = event({ event: 'policy.denied', tool: 'af_get_balance', reasonCode: 'INTERNAL_UNAVAILABLE', metadata: { detail: 'paypal:NOT_FOUND' } });
+    const hostile = event({ event: 'policy.denied', tool: 'af_get_balance', reasonCode: 'INTERNAL_UNAVAILABLE', metadata: { detail: HOSTILE } });
+    const { server } = await started({ guardian: { ...fake, listActivity: async () => [failed, hostile] } });
+    const body = (await (await login(server)).get('/activity')).body;
+    expect(body).toContain('kordn or the bank didn&#39;t answer (bank said <code>paypal:NOT_FOUND</code>)');
+    expect(body).toContain(`(bank said <code>${ESCAPED}</code>)`);
+  });
+
   it('renders a hostile memo in metadata as literal escaped text', async () => {
     const fake = createFakeGuardian({ policy });
     const hostile = event({
