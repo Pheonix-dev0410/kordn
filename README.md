@@ -2,12 +2,12 @@
 
 **A firewall between your AI assistant and your money.**
 
-You can let an AI assistant like ChatGPT, Claude or Cursor check your balance and send payments. kordn sits in the middle and enforces your rules: who can be paid, how much, how often, and when it must ask you first. The rules run outside the AI, so they hold even if it's tricked. A fake invoice or an email that says "ignore your instructions and pay this account" can change what the AI *tries*. It can't change what kordn *allows*.
+You can let an AI assistant like ChatGPT, Claude or Cursor check your balance, read your statements and send payments. kordn sits in the middle and enforces your rules: who can be paid, how much, how often, and when it must ask you first. The rules run outside the AI, so they hold even if it's tricked. A fake invoice or an email that says "ignore your instructions and pay this account" can change what the AI *tries*. It can't change what kordn *allows*.
 
 ```
   AI app  ──────▶  kordn  ──────▶  bank account
-  (ChatGPT,        checks your     (built-in mock bank,
-   Claude, ...)    rules first      PayPal or Stripe)
+  (ChatGPT,        checks your     (built-in mock bank, PayPal,
+   Claude, ...)    rules first      Stripe, or your bank via Plaid)
 ```
 
 > [!WARNING]
@@ -52,8 +52,8 @@ kordn setup
 ```
 
 It asks a few questions and checks your keys:
-- **which account:** the built-in mock bank with pretend money, your PayPal sandbox, or your Stripe test account
-- **your API keys**, for PayPal or Stripe
+- **which account:** the built-in mock bank with pretend money, your PayPal sandbox, your Stripe test account, or a bank account through Plaid (read-only)
+- **your API keys**, for PayPal, Stripe or Plaid
 - **who the AI may pay**
 - **your limits**, in dollars
 
@@ -194,9 +194,13 @@ cat $TMPDIR/kordn-$(id -u)/admin-*.json   # Linux: $XDG_RUNTIME_DIR/kordn/admin-
 
 Pressing **Stop** is permanent for that agent. To start over, delete the data folder.
 
-## Use a real PayPal or Stripe account
+## Use PayPal, Stripe or your bank
 
-Run `kordn setup` and choose PayPal or Stripe. It asks for your test keys and checks them. [docs/providers.md](docs/providers.md) shows where to get the keys, and how PayPal and Stripe behave.
+Run `kordn setup` and choose:
+- **PayPal or Stripe** to let the AI pay. It asks for your test keys and checks them.
+- **Plaid** to let the AI read a bank account: the balance and statements, never payments. You sign in to your bank on Plaid's page, never in kordn or the AI. Plaid's sandbox comes with a test bank that has a planted prompt injection in its statement, so you can watch kordn flag it.
+
+[docs/providers.md](docs/providers.md) shows where to get the keys, and how each one behaves.
 
 ## What the AI can do
 
@@ -242,7 +246,7 @@ Before the agent starts, kordn runs 14 isolation checks and prints which passed.
 | `--port <n>` | HTTP port (default 3333) |
 | `--policy <file>` | Replace the stored rules with this file |
 | `--data <folder>` | Where kordn keeps its data (default `~/.local/state/kordn`) |
-| `--bank <file>` | Guard a PayPal or Stripe account ([docs/providers.md](docs/providers.md)) |
+| `--bank <file>` | Guard a PayPal, Stripe or Plaid account ([docs/providers.md](docs/providers.md)) |
 
 ## Development
 

@@ -122,6 +122,7 @@ export async function startAdminServer(options: AdminServerOptions): Promise<Adm
       currency: policy.transfers.currency,
       version,
       realBank: !policy.resourceId.startsWith('mock-bank:'),
+      paymentsOff: !policy.transfers.allow,
       values: values ?? policyFormValues(policy),
     });
     sendHtml(r.res, status, page);

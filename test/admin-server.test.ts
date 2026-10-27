@@ -294,6 +294,21 @@ describe('admin policy editor', () => {
     expect(() => server.setMode('observe' as 'guard')).toThrow(/mode/);
   });
 
+  it('shows no payment fields when payments are off, and saving reads keeps them off', async () => {
+    const readOnly = { ...policy, resourceId: 'plaid:main', transfers: { ...policy.transfers, allow: false, allowedPayeeIds: [] } };
+    const { server, guardian } = await started({ guardian: createFakeGuardian({ policy: readOnly }) });
+    const s = await login(server);
+    const page = (await s.get('/policy')).body;
+    expect(page).toContain("Off for this account: the AI can read it, but can't pay anyone.");
+    expect(page).not.toMatch(/<label for="maxSingleUsd"|<textarea/);
+    expect(page).toMatch(/type="hidden" name="maxSingleUsd" value="100.00"/);
+    const values = Object.fromEntries([...page.matchAll(/<input[^>]*name="(\w+)"[^>]*value="([^"]*)"/g)].map((m) => [m[1]!, m[2]!]));
+    expect((await s.post('/policy', { ...values, readsPerHour: '9' })).status).toBe(303);
+    const { policy: saved } = await guardian.getPolicy();
+    expect(saved.reads.maxCalls).toBe(9);
+    expect(saved.transfers).toEqual(readOnly.transfers);
+  });
+
   it('saves limits as exact integer minor units through updatePolicy', async () => {
     const { server, guardian } = await started();
     const s = await login(server);
