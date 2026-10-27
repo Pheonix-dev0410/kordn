@@ -212,6 +212,8 @@ const REASONS: Record<TransferReasonCode, string> = {
   INTERNAL_UNAVAILABLE: "kordn or the bank didn't answer",
   IDEMPOTENCY_CONFLICT: 'it reused a payment id with different details',
   RATE_LIMITED: 'it asked too often',
+  LOOKBACK_LIMIT: 'further back than your limit',
+  ROW_LIMIT: 'more rows than your limit',
   ADAPTER_FAILED: 'the bank refused it',
 };
 

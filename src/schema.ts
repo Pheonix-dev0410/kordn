@@ -80,6 +80,8 @@ export const DenyCode = z.enum([
   'INTERNAL_UNAVAILABLE',
   'IDEMPOTENCY_CONFLICT',
   'RATE_LIMITED',
+  'LOOKBACK_LIMIT',
+  'ROW_LIMIT',
 ]);
 export type DenyCode = z.infer<typeof DenyCode>;
 

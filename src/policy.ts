@@ -31,10 +31,9 @@ export function evaluate({ agentId, call, policy, revoked, usage, nowMs }: Evalu
     const dayMs = 86_400_000;
     const todayMs = Math.floor(nowMs / dayMs) * dayMs;
     const fromMs = Date.parse(call.fromDate);
-    if (call.limit > policy.reads.maxRowsPerCall || !Number.isFinite(todayMs) ||
-        fromMs < todayMs - policy.reads.maxLookbackDays * dayMs || fromMs > todayMs) {
-      return deny('INVALID_ARGUMENTS');
-    }
+    if (!Number.isFinite(todayMs) || !(fromMs <= todayMs)) return deny('INVALID_ARGUMENTS');
+    if (fromMs < todayMs - policy.reads.maxLookbackDays * dayMs) return deny('LOOKBACK_LIMIT');
+    if (call.limit > policy.reads.maxRowsPerCall) return deny('ROW_LIMIT');
   }
   if (usage.reads >= policy.reads.maxCalls) return deny('FREQUENCY_LIMIT');
   return { kind: 'allow' };

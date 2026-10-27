@@ -61,10 +61,11 @@ describe('evaluate', () => {
     expect(evaluate({ ...read, usage: { ...base.usage, reads: 4 } })).toEqual({ kind: 'allow' });
     expect(evaluate({ ...read, usage: { ...base.usage, reads: 5 } })).toEqual(deny('FREQUENCY_LIMIT'));
     expect(evaluate({ ...read, policy: { ...policy, reads: { ...policy.reads, allow: false } } })).toEqual(deny('CAPABILITY_DISABLED'));
-    for (const fromDate of ['2026-09-24', '2026-10-26', 'bad-date']) {
+    expect(evaluate({ ...read, call: { ...read.call, fromDate: '2026-09-24' } as ToolCall })).toEqual(deny('LOOKBACK_LIMIT'));
+    for (const fromDate of ['2026-10-26', 'bad-date']) {
       expect(evaluate({ ...read, call: { ...read.call, fromDate } as ToolCall })).toEqual(deny('INVALID_ARGUMENTS'));
     }
-    expect(evaluate({ ...read, policy: { ...policy, reads: { ...policy.reads, maxRowsPerCall: 19 } } })).toEqual(deny('INVALID_ARGUMENTS'));
+    expect(evaluate({ ...read, policy: { ...policy, reads: { ...policy.reads, maxRowsPerCall: 19 } } })).toEqual(deny('ROW_LIMIT'));
     for (const call of [
       { tool: 'af_get_balance', resourceId: policy.resourceId },
       { tool: 'af_get_transfer_status', transferRef: 'tr_0123456789abcdef' },

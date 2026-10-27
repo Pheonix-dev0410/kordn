@@ -215,11 +215,11 @@ describe('HTTP transport', () => {
     const balance = await client.callTool({ name: 'af_get_balance', arguments: { resourceId: policy.resourceId } });
     expect(balance.structuredContent).toMatchObject({ currency: 'USD' });
     const shell = await client.callTool({ name: 'shell', arguments: {} });
-    expect(shell.structuredContent).toEqual({ error: { code: 'UNKNOWN_ACTION' } });
+    expect(shell.structuredContent).toEqual({ error: { code: 'UNKNOWN_ACTION', hint: expect.any(String) } });
     for (const params of [{ name: 'shell', arguments: 'str' }, { name: 42 }]) {
       const malformed = await client.request({ method: 'tools/call', params: params as never });
       expect(malformed.isError).toBe(true);
-      expect(malformed.structuredContent).toEqual({ error: { code: 'UNKNOWN_ACTION' } });
+      expect(malformed.structuredContent).toEqual({ error: { code: 'UNKNOWN_ACTION', hint: expect.any(String) } });
     }
     expect(await guardian.listActivity({ events: ['policy.denied'] })).toHaveLength(3);
   });
