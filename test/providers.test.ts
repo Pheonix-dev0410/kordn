@@ -259,6 +259,23 @@ describe('PayPal', () => {
     expect(provider.sent.every((r) => r.url.host === 'api-m.paypal.com')).toBe(true);
     expect(provider.sent.at(-1)!.url.searchParams.get('start_date')).toBe('2026-10-20T00:00:00.000Z');
   });
+
+  it('lists the newest transactions first, from the last pages', async () => {
+    // PayPal lists oldest first, so the newest are on its last page.
+    const tx = (id: string, day: number) => ({
+      transaction_info: { transaction_id: id, transaction_amount: { currency_code: 'USD', value: '1.00' }, transaction_initiation_date: `2026-10-${day}T10:00:00+0000` },
+    });
+    const pages: Record<string, unknown[]> = { '1': [tx('A', 10), tx('B', 11)], '2': [tx('C', 12), tx('D', 13)], '3': [tx('E', 14)] };
+    const provider = fakeProvider((req) => {
+      if (req.url.pathname === '/v1/oauth2/token') return token;
+      return { status: 200, json: { transaction_details: pages[req.url.searchParams.get('page')!], total_pages: 3 } };
+    });
+    const bank = adapter(provider.fetch);
+    const { transactions } = await bank.listTransactions('paypal:main', '2026-10-01', 2);
+    expect(transactions.map((t) => t.transactionId)).toEqual(['E', 'D']);
+    expect(provider.sent.filter((r) => r.url.pathname === '/v1/reporting/transactions').map((r) => r.url.searchParams.get('page'))).toEqual(['1', '3', '2']);
+    expect(provider.sent.at(-1)!.url.searchParams.get('page_size')).toBe('500');
+  });
 });
 
 describe('--bank file', () => {
