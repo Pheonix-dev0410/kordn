@@ -1,6 +1,6 @@
 # Use your own PayPal, Stripe or bank account
 
-By default kordn guards a built-in mock bank, so you can try everything without an account. It can also guard your own **PayPal** account (USD payouts to PayPal emails) or **Stripe** account (USD transfers to connected accounts), in test mode, or **read** a bank account through **Plaid** (US banks, USD). The agent still gets the same four tools, and your API keys stay with kordn.
+By default kordn guards a built-in mock bank, so you can try everything without an account. It can also guard your own **PayPal** account (USD payouts to PayPal emails) or **Stripe** account (USD transfers to connected accounts), in test mode or with real money, or **read** a bank account through **Plaid** (US banks, USD). The agent still gets the same four tools, and your API keys stay with kordn.
 
 How each one is tested:
 
@@ -9,6 +9,8 @@ How each one is tested:
 - **Plaid:** against the Plaid sandbox. Signing up at [dashboard.plaid.com](https://dashboard.plaid.com) is free.
 
 ## 1. Get test keys and an id for each payee
+
+For real money, see [Real money](#real-money) below.
 
 **PayPal**
 1. On [developer.paypal.com](https://developer.paypal.com), under Sandbox accounts, create a **US** business account. PayPal refuses payouts from Indian accounts, sandbox included (`PAYOUT_NOT_AVAILABLE`).
@@ -34,10 +36,10 @@ kordn setup
 Choose PayPal or Stripe, then:
 1. Paste the keys. Secrets are hidden as you type.
 2. Add each payee: a short name the AI will use, like `landlord`, and their PayPal email or `acct_…` id.
-3. Set your limits.
+3. Press Enter to take the suggested limits, or set your own.
 
 Choose Plaid, then:
-1. Choose Sandbox, and paste the keys.
+1. Choose Sandbox (or Production, for a real bank), and paste the keys.
 2. Connect a bank. Either kordn makes a **test bank** for you, with sample transactions, or you sign in on **Plaid's page** in your browser (in the sandbox: `user_good` / `pass_good`). With a real bank, that page is where your bank login goes; kordn and the AI never see it.
 3. If the bank has several accounts, pick one.
 
@@ -56,7 +58,7 @@ Setup asks **Test or Live** for PayPal and Stripe. Live is your real account, an
 
 Start small: one payee who is you (a second account of your own), and a $1 payment you approve on the dashboard.
 
-Without setup, `--live` with `--bank` does the same: kordn uses the PayPal sandbox and refuses live Stripe keys unless you pass it.
+Without setup, pass `--live` with `--bank` for the same. Otherwise kordn uses the PayPal sandbox and refuses live Stripe keys.
 
 <details>
 <summary>Without setup: the files by hand</summary>
@@ -67,7 +69,7 @@ Copy `examples/bank-paypal.json` or `examples/bank-stripe.json` and map each pay
 PAYPAL_CLIENT_ID=... PAYPAL_CLIENT_SECRET=... kordn --policy my-policy.json --bank my-bank.json
 ```
 
-For Stripe, set `STRIPE_API_KEY`. `--policy` and `--bank` take precedence over what setup saved.
+For Stripe, set `STRIPE_API_KEY`. `--policy` and `--bank` take precedence over what setup saved. Plaid needs `kordn setup`, which connects the bank.
 
 </details>
 

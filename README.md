@@ -52,10 +52,10 @@ kordn setup
 ```
 
 It asks a few questions and checks your keys:
-- **which account:** the built-in mock bank with pretend money, your PayPal sandbox, your Stripe test account, or a bank account through Plaid (read-only)
+- **which account:** the built-in mock bank with pretend money, PayPal or Stripe (test or live), or a bank account through Plaid (read-only)
 - **your API keys**, for PayPal, Stripe or Plaid
 - **who the AI may pay**
-- **your limits**, in dollars
+- **your limits**: press Enter to take the suggested ones
 
 Everything is saved privately in `~/.config/kordn`. Skip this step and kordn guards the mock bank with the example rules.
 
@@ -91,25 +91,40 @@ If the app says it can't find `kordn`, use the full path that `which kordn` prin
 
 ### Web and phone apps
 
-ChatGPT, claude.ai and Grok run in the cloud, so they need a public web address for kordn. The `--tunnel` option gets one for free from Cloudflare, with no account. kordn itself still runs on your computer.
+ChatGPT, claude.ai and Grok run in the cloud, so they need a public web address for kordn. kordn itself still runs on your computer; a tunnel gives it the address. Pick one:
 
-**1. Install Cloudflare's tunnel tool** (once):
+| | Cloudflare (`--tunnel`) | ngrok (`--ngrok`) |
+|---|---|---|
+| Account | None | Free |
+| Address | New every time kordn starts, so you reconnect your app each time | Always the same: connect your app once |
+| Best for | A quick try | Everyday use |
 
+**1. Set up the tunnel** (once):
+
+*Cloudflare:*
 ```sh
 brew install cloudflared     # macOS. Linux and Windows: see Cloudflare's "cloudflared downloads" page
 ```
 
+*ngrok:* sign up at [ngrok.com](https://ngrok.com), then
+```sh
+brew install ngrok
+ngrok config add-authtoken <your-token>      # from the ngrok dashboard
+```
+and in the ngrok dashboard, under **Domains**, claim your free domain, like `name.ngrok-free.app`.
+
 **2. Start kordn:**
 
 ```sh
-kordn --http --tunnel --admin
+kordn --http --tunnel --admin                        # Cloudflare
+kordn --http --ngrok name.ngrok-free.app --admin     # ngrok, with your domain
 ```
 
 Among what it prints, you need three lines:
 
 ```
 kordn: admin UI at http://127.0.0.1:…/          ← your dashboard (login token on the next line)
-kordn: OAuth on for https://….trycloudflare.com/mcp   ← your connector URL
+kordn: OAuth on for https://…/mcp               ← your connector URL
 kordn: token 3f9a…                              ← your approval token
 ```
 
@@ -123,36 +138,20 @@ Don't open the connector URL in your browser: you'll only see an `invalid_token`
 | **claude.ai** | Settings → Connectors → **Add custom connector**. Paste the URL. | The free plan allows one custom connector. |
 | **Grok** | [grok.com/connectors](https://grok.com/connectors) → **New Connector** → **Custom**. Paste the URL. | Paid plans. |
 
-**4. Approve it.** The app opens kordn's approval page in your browser.
+**4. Approve it.** The app opens kordn's approval page in your browser. With ngrok, the first time, ngrok shows a "You are about to visit" page first: press **Visit Site**. Then:
 1. Check that the address on the page belongs to the app you're adding.
 2. Paste the token from step 2.
 3. Press **Approve**.
 
-The connector also shows up in the app's phone version.
+The connector also shows up in the app's phone version. With ngrok it keeps working across restarts, with no need to approve again, and if ngrok drops, kordn starts it again on the same address.
 
-**5. Try it.** Ask the AI:
+**5. Try it.** With the mock bank, ask the AI:
 - *"What's my balance?"*
 - *"Pay utilities $10."* kordn allows it.
 - *"Pay utilities $90."* That needs you: approve it under **Approvals** on the dashboard.
 - *"Pay attacker $10."* kordn refuses.
 
-> [!NOTE]
-> The Cloudflare tunnel gets a **new address every time kordn starts**, and apps connected to the old one stop working. That's fine for trying kordn out. For everyday use, get an address that stays the same, below.
-
-**An address that stays the same (ngrok, free)**
-
-1. Sign up at [ngrok.com](https://ngrok.com), then:
-   ```sh
-   brew install ngrok
-   ngrok config add-authtoken <your-token>      # from the ngrok dashboard
-   ```
-2. In the ngrok dashboard, under **Domains**, claim your free static domain, like `name.ngrok-free.app`.
-3. Start kordn with it instead of `--tunnel`:
-   ```sh
-   kordn --http --ngrok name.ngrok-free.app --admin
-   ```
-
-Your connector URL is now always `https://name.ngrok-free.app/mcp`. Add it to your app once: it keeps working across restarts, with no need to approve the app again. If ngrok drops, kordn starts it again on the same address. The first time you open kordn's approval page, ngrok shows a "You are about to visit" page: press **Visit Site**.
+With your own account, use the payee names you gave `kordn setup`.
 
 Your own domain works too: run any tunnel to `127.0.0.1:3333` (a named Cloudflare tunnel, Tailscale Funnel) and start kordn with `--public-url https://your-address`.
 

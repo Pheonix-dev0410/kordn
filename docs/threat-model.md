@@ -8,7 +8,7 @@ In Contain mode, on the supported Linux setup, mock-bank actions cannot execute 
 
 The supported setup is Linux with rootless Docker, where `kordn contain` passes all 14 isolation checks and reports Contain. Anywhere else (rootful Docker, macOS, Windows, or any client that talks to kordn directly) it's Guard mode: every call through kordn is checked, but nothing stops the agent from using other tools.
 
-We don't claim to stop prompt injection in general, to secure agents that have other unmediated tools, or to protect real bank accounts. v0.1 is experimental and uses fake money only.
+We don't claim to stop prompt injection in general, to secure agents that have other unmediated tools, or to make real money safe: live mode exists, but kordn is an alpha and you use it at your own risk. Start with test accounts.
 
 ## Attacker
 
@@ -73,7 +73,7 @@ T-numbers are the design doc's §11.1 cases in `test/matrix.test.ts`. Sandbox ro
 - Stopping an agent is permanent for its agent id. To start over, delete the data directory.
 - One guardian process per data directory. Two kordn processes on the same directory aren't supported.
 - The audit log's hash chain detects edits by anything that can't rewrite both the log and its head. It doesn't protect against whoever owns the host.
-- v0.1 has no live model: the agent in the sandbox is a scripted MCP client.
+- Contain mode ships no live model: the agent in the sandbox is a scripted MCP client unless you give your own command.
 - With `--bank`, kordn's limits cover calls that go through kordn. The provider API key itself can do anything its permissions allow, so keep it out of the agent's reach and, on Stripe, use a restricted key. kordn uses test keys unless started with `--live`, or `kordn setup` saved a live account (`"live": true` in `bank.json`, after you typed `real money`). Anyone who can edit `~/.config/kordn` can switch it to live, as they could also replace the keys.
 - PayPal has no lookup by our id, so reconcile sends a $0 payout with the same `sender_batch_id`. This relies on PayPal checking the duplicate id before the amount (tested against the sandbox on 2026-10-27) and on its 30-day duplicate window. A payout still unknown after 30 days could be misread as never sent.
 - When a provider call fails, the audit log keeps the provider's error code for the owner, e.g. `paypal:NOT_FOUND`, but only if it is a bare code; any other text from the provider is logged as `error`. The agent never gets it.

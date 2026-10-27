@@ -39,7 +39,7 @@ To update a base image, `docker pull` it and replace the `@sha256:` digest in th
 
 ### The agent
 
-v0.1 has no live model. The default command is `sandbox/agent.mjs`, a scripted MCP client. It:
+kordn ships no live model. The default command is `sandbox/agent.mjs`, a scripted MCP client. It:
 
 1. starts `node /app/dist/index.js --guardian /run/kordn.sock` (kordn) over stdio;
 2. lists the tools;
