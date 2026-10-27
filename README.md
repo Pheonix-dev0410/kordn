@@ -71,7 +71,7 @@ KORDN_TOKEN=<random-secret> node dist/index.js --http --port 3333 --public-url h
 
 Give kordn a public hostname that stays the same: a named Cloudflare tunnel, an ngrok static domain or Tailscale Funnel. A quick tunnel like the one above gets a new URL every time it starts, and each connector is tied to the URL it was added with. After a restart on a new URL every connector stops working and has to be added again; kordn forgets the apps registered under the old URL when it starts.
 
-> The per-app steps below are to be confirmed by the owner's live test.
+> These steps haven't been tried against the live apps yet. If one differs, please open an issue.
 
 1. ChatGPT: Settings, Connectors, turn on developer mode, create a connector with the URL above, authenticating with OAuth.
 2. claude.ai: Settings, Connectors, Add custom connector, paste the URL.
@@ -84,8 +84,6 @@ Start kordn with `--admin` to see your apps: each one is listed under Apps in th
 kordn holds up to 20 connected apps; past that, approving another fails until you revoke one under Apps. An app that hasn't been used for 30 days gives up its place and is dropped; approve it again to bring it back.
 
 **Try it locally with MCP Inspector**
-
-> To be confirmed by the owner's live test.
 
 ```sh
 KORDN_TOKEN=<random-secret> node dist/index.js --http --port 3333 --public-url http://localhost:3333 --admin

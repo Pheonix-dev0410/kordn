@@ -19,7 +19,7 @@ describe('parseClientMetadata', () => {
   const uri = 'https://a.example/cb';
 
   it('rejects bad redirect_uris', () => {
-    for (const body of [{}, { redirect_uris: [] }, { redirect_uris: Array(6).fill(uri) }, { redirect_uris: ['http://example.com/x'] }, { redirect_uris: [uri, 5] }, null, 'x']) {
+    for (const body of [{}, { redirect_uris: [] }, { redirect_uris: Array(6).fill(uri) }, { redirect_uris: ['http://example.com/x'] }, { redirect_uris: ['https://a.example/c\tb'] }, { redirect_uris: ['https://a.example/c b'] }, { redirect_uris: [uri, 5] }, null, 'x']) {
       expect(parseClientMetadata(body)).toMatchObject({ ok: false, error: 'invalid_redirect_uri' });
     }
   });

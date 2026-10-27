@@ -1,7 +1,7 @@
 export type AuthMethod = 'none' | 'client_secret_post' | 'client_secret_basic';
 export interface ClientRegistration { name: string; redirectUris: string[]; authMethod: AuthMethod }
 
-const AUTH_METHODS: readonly string[] = ['none', 'client_secret_post', 'client_secret_basic'];
+export const AUTH_METHODS: readonly AuthMethod[] = ['none', 'client_secret_post', 'client_secret_basic'];
 const GRANT_TYPES: readonly string[] = ['authorization_code', 'refresh_token'];
 const RESPONSE_TYPES: readonly string[] = ['code'];
 const MAX_REDIRECT_URIS = 5;
@@ -23,7 +23,8 @@ export function isAllowedRedirectUri(uri: string): boolean {
   } catch {
     return false;
   }
-  if (uri.includes('#') || url.username || url.password) return false;
+  // The URL parser drops tabs and newlines, so the stored string and the parsed one could differ.
+  if (/[\p{Cc}\s]/u.test(uri) || uri.includes('#') || url.username || url.password) return false;
   if (url.protocol === 'https:') return true;
   return url.protocol === 'http:' && (url.hostname === 'localhost' || url.hostname === '127.0.0.1');
 }
@@ -59,7 +60,7 @@ export function parseClientMetadata(body: unknown): Parsed {
   const responseTypes = supported(m.response_types, RESPONSE_TYPES, 'code');
   if (!grantTypes || !responseTypes) return badMeta;
   const method = m.token_endpoint_auth_method ?? 'none';
-  if (typeof method !== 'string' || !AUTH_METHODS.includes(method)) return badMeta;
+  if (typeof method !== 'string' || !(AUTH_METHODS as readonly string[]).includes(method)) return badMeta;
   const name = typeof m.client_name === 'string' ? m.client_name : '';
   return { ok: true, value: { name: cleanName(name), redirectUris: [...(uris as string[])], authMethod: method as AuthMethod }, grantTypes, responseTypes };
 }

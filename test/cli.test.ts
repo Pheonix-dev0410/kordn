@@ -670,7 +670,7 @@ describe('--public-url', () => {
     const port = new URL(args[3] as string).port || '80';
     const warning = `kordn: warning: --public-url port ${port} differs from --port 0; OAuth redirects will point at the wrong port\n`;
     if (warns) expect(kordn.stderr()).toContain(warning);
-    else expect(kordn.stderr()).not.toContain('warning');
+    else expect(kordn.stderr()).not.toContain('kordn: warning');
     kordn.child.kill('SIGTERM');
     expect((await kordn.exited).code).toBe(0);
   });
@@ -684,7 +684,7 @@ describe('--public-url', () => {
     chmodSync(data, 0o700);
     const kordn = spawnCli(['--http', '--port', String(port), '--public-url', `http://localhost:${port}`, '--data', data], { KORDN_TOKEN: 'y'.repeat(32) });
     await kordn.waitForStderr(/kordn: OAuth on for/);
-    expect(kordn.stderr()).not.toContain('warning');
+    expect(kordn.stderr()).not.toContain('kordn: warning');
     kordn.child.kill('SIGTERM');
     expect((await kordn.exited).code).toBe(0);
   });

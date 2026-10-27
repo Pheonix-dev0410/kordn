@@ -5,7 +5,7 @@ import { ApprovalDecisionError, GuardianError, Ledger, PolicyVersionConflict } f
 import type { Reservation } from './ledger.js';
 
 /** App-supplied text reaches the audit log, so it loses control characters and is cut short. */
-export const cleanAppText = (text: string): string => text.replace(/[\p{Cc}\p{Cf}]/gu, '').slice(0, 100);
+export const cleanAppText = (text: string): string => Array.from(text.replace(/[\p{Cc}\p{Cf}]/gu, '')).slice(0, 100).join('');
 
 export { GuardianError } from './ledger.js';
 

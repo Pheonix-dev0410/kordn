@@ -11,7 +11,7 @@ import {
 import type { Html } from '../admin/html.js';
 import { WindowLimit, sameSecret } from '../admin/session.js';
 import type { OAuthAuditEvent } from '../guardian-api.js';
-import { type AuthMethod, parseClientMetadata } from './client-metadata.js';
+import { AUTH_METHODS, parseClientMetadata } from './client-metadata.js';
 import { consentCsp, consentPage, oauthErrorPage } from './pages.js';
 import { isValidChallenge, isValidVerifier } from './pkce.js';
 import type { AuthorizeRequest, OAuthStore, StoredClient } from './store.js';
@@ -37,7 +37,6 @@ export interface OAuthServer {
   verifier: OAuthTokenVerifier;
 }
 
-const AUTH_METHODS: AuthMethod[] = ['none', 'client_secret_post', 'client_secret_basic'];
 const WELL_KNOWN_RESOURCE = '/.well-known/oauth-protected-resource';
 const WELL_KNOWN_SERVER = '/.well-known/oauth-authorization-server';
 const OWNER_FAILURES_PER_MINUTE = 5;
@@ -129,8 +128,8 @@ export function createOAuthServer(options: OAuthServerOptions): OAuthServer {
     response_types_supported: ['code'],
     grant_types_supported: ['authorization_code', 'refresh_token'],
     code_challenge_methods_supported: ['S256'],
-    token_endpoint_auth_methods_supported: AUTH_METHODS,
-    revocation_endpoint_auth_methods_supported: AUTH_METHODS,
+    token_endpoint_auth_methods_supported: [...AUTH_METHODS],
+    revocation_endpoint_auth_methods_supported: [...AUTH_METHODS],
     authorization_response_iss_parameter_supported: true,
   };
   const metadataOptions = {
