@@ -2,7 +2,7 @@ import { z } from 'zod';
 import { ALLOWED_RUNTIMES, SANDBOX_SOCKET, SECURITY_OPTS, TMP_TMPFS_OPTIONS } from './sandbox-contract.js';
 import type { ProbeParams, ProbeResult } from './sandbox-probe.js';
 
-// Launcher checks for Contain mode (design doc §9.3). Pure functions over `docker info`,
+// Launcher checks for Contain mode. Pure functions over `docker info`,
 // `docker inspect` and the in-container probe, so every unsafe setting can be tested
 // without Docker. A check passes only when the configuration AND the runtime evidence
 // agree; anything missing or unreadable is a failure.

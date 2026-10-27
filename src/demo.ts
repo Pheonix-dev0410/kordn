@@ -8,7 +8,7 @@ import { MockBankAdapter } from './mock-bank.js';
 import { runContain } from './sandbox.js';
 import { Policy, TOOL_NAMES } from './schema.js';
 
-// The five-minute demo (design doc §14.1). A scripted agent does the worst thing it can, and
+// The five-minute demo. A scripted agent does the worst thing it can, and
 // kordn's answers and the mock bank's state are printed. Each scene starts from a fresh,
 // temporary data directory, so nothing here touches ~/.local/state/kordn.
 

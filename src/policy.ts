@@ -24,7 +24,7 @@ export function evaluate({ agentId, call, policy, revoked, usage, nowMs }: Evalu
 
   const { tool, ...args } = call;
   if (!parseToolCall(tool, args)) return deny('INVALID_ARGUMENTS');
-  // Internal status polling has its own rate limit in the ledger (design §6.4).
+  // Internal status polling has its own rate limit in the ledger.
   if (call.tool === 'af_get_transfer_status') return { kind: 'allow' };
   if (!policy.reads.allow) return deny('CAPABILITY_DISABLED');
   if (call.tool === 'af_list_transactions') {

@@ -52,10 +52,10 @@ kordn setup
 ```
 
 It asks a few questions and checks your keys:
-- **which account:** the built-in mock bank with pretend money, your PayPal sandbox, your Stripe test account, or a bank account through Plaid (read-only)
+- **which account:** the built-in mock bank with pretend money, PayPal or Stripe (test or live), or a bank account through Plaid (read-only)
 - **your API keys**, for PayPal, Stripe or Plaid
 - **who the AI may pay**
-- **your limits**, in dollars
+- **your limits**: press Enter to take the suggested ones
 
 Everything is saved privately in `~/.config/kordn`. Skip this step and kordn guards the mock bank with the example rules.
 
@@ -91,25 +91,40 @@ If the app says it can't find `kordn`, use the full path that `which kordn` prin
 
 ### Web and phone apps
 
-ChatGPT, claude.ai and Grok run in the cloud, so they need a public web address for kordn. The `--tunnel` option gets one for free from Cloudflare, with no account. kordn itself still runs on your computer.
+ChatGPT, claude.ai and Grok run in the cloud, so they need a public web address for kordn. kordn itself still runs on your computer; a tunnel gives it the address. Pick one:
 
-**1. Install Cloudflare's tunnel tool** (once):
+| | Cloudflare (`--tunnel`) | ngrok (`--ngrok`) |
+|---|---|---|
+| Account | None | Free |
+| Address | New every time kordn starts, so you reconnect your app each time | Always the same: connect your app once |
+| Best for | A quick try | Everyday use |
 
+**1. Set up the tunnel** (once):
+
+*Cloudflare:*
 ```sh
 brew install cloudflared     # macOS. Linux and Windows: see Cloudflare's "cloudflared downloads" page
 ```
 
+*ngrok:* sign up at [ngrok.com](https://ngrok.com), then
+```sh
+brew install ngrok
+ngrok config add-authtoken <your-token>      # from the ngrok dashboard
+```
+and in the ngrok dashboard, under **Domains**, claim your free domain, like `name.ngrok-free.app`.
+
 **2. Start kordn:**
 
 ```sh
-kordn --http --tunnel --admin
+kordn --http --tunnel --admin                        # Cloudflare
+kordn --http --ngrok name.ngrok-free.app --admin     # ngrok, with your domain
 ```
 
 Among what it prints, you need three lines:
 
 ```
 kordn: admin UI at http://127.0.0.1:…/          ← your dashboard (login token on the next line)
-kordn: OAuth on for https://….trycloudflare.com/mcp   ← your connector URL
+kordn: OAuth on for https://…/mcp               ← your connector URL
 kordn: token 3f9a…                              ← your approval token
 ```
 
@@ -123,36 +138,20 @@ Don't open the connector URL in your browser: you'll only see an `invalid_token`
 | **claude.ai** | Settings → Connectors → **Add custom connector**. Paste the URL. | The free plan allows one custom connector. |
 | **Grok** | [grok.com/connectors](https://grok.com/connectors) → **New Connector** → **Custom**. Paste the URL. | Paid plans. |
 
-**4. Approve it.** The app opens kordn's approval page in your browser.
+**4. Approve it.** The app opens kordn's approval page in your browser. With ngrok, the first time, ngrok shows a "You are about to visit" page first: press **Visit Site**. Then:
 1. Check that the address on the page belongs to the app you're adding.
 2. Paste the token from step 2.
 3. Press **Approve**.
 
-The connector also shows up in the app's phone version.
+The connector also shows up in the app's phone version. With ngrok it keeps working across restarts, with no need to approve again, and if ngrok drops, kordn starts it again on the same address.
 
-**5. Try it.** Ask the AI:
+**5. Try it.** With the mock bank, ask the AI:
 - *"What's my balance?"*
 - *"Pay utilities $10."* kordn allows it.
 - *"Pay utilities $90."* That needs you: approve it under **Approvals** on the dashboard.
 - *"Pay attacker $10."* kordn refuses.
 
-> [!NOTE]
-> The Cloudflare tunnel gets a **new address every time kordn starts**, and apps connected to the old one stop working. That's fine for trying kordn out. For everyday use, get an address that stays the same, below.
-
-**An address that stays the same (ngrok, free)**
-
-1. Sign up at [ngrok.com](https://ngrok.com), then:
-   ```sh
-   brew install ngrok
-   ngrok config add-authtoken <your-token>      # from the ngrok dashboard
-   ```
-2. In the ngrok dashboard, under **Domains**, claim your free static domain, like `name.ngrok-free.app`.
-3. Start kordn with it instead of `--tunnel`:
-   ```sh
-   kordn --http --ngrok name.ngrok-free.app --admin
-   ```
-
-Your connector URL is now always `https://name.ngrok-free.app/mcp`. Add it to your app once: it keeps working across restarts, with no need to approve the app again. If ngrok drops, kordn starts it again on the same address. The first time you open kordn's approval page, ngrok shows a "You are about to visit" page: press **Visit Site**.
+With your own account, use the payee names you gave `kordn setup`.
 
 Your own domain works too: run any tunnel to `127.0.0.1:3333` (a named Cloudflare tunnel, Tailscale Funnel) and start kordn with `--public-url https://your-address`.
 
@@ -191,7 +190,7 @@ Anything not allowed is denied.
 
 Add `--admin` to any kordn command to get a private dashboard in your browser, on your computer only.
 
-![The kordn dashboard: agent status, balance, usage against limits, recent payments and activity](docs/dashboard.png)
+![The kordn dashboard: agent status, balance, usage against limits, recent payments and activity](.github/dashboard.png)
 
 | Page | What it's for |
 |---|---|
@@ -217,7 +216,17 @@ Run `kordn setup` and choose:
 - **PayPal or Stripe** to let the AI pay. Choose **Test** (pretend money) or **Live** (your real account). It asks for your keys and checks them.
 - **Plaid** to let the AI read a bank account: the balance and statements, never payments. You sign in to your bank on Plaid's page, never in kordn or the AI. Plaid's sandbox comes with a test bank that has a planted prompt injection in its statement, so you can watch kordn flag it.
 
-[docs/providers.md](docs/providers.md) shows where to get the keys, and how each one behaves.
+**Where to get the keys**
+
+- **PayPal:** on [developer.paypal.com](https://developer.paypal.com), create an app under Apps & Credentials (Sandbox or Live), copy its Client ID and Secret, and turn on **Transaction search**. For test payments, use a **US** sandbox business account. Payouts need a Business account in a country where PayPal allows them, which excludes India.
+- **Stripe:** a key (`sk_test_…`, or `rk_live_…` for real money) that can create transfers and read your balance, and a connected account (`acct_…`) for each payee.
+- **Plaid:** sign up free at [dashboard.plaid.com](https://dashboard.plaid.com) and copy the `client_id` and the **Sandbox** secret under Developers → Keys. In the sandbox, setup can make a test bank for you, or you sign in on Plaid's page with `user_good` / `pass_good`. Real banks need Plaid's production access.
+
+**Good to know**
+
+- A PayPal payout often stays "processing" for a while. kordn counts it against your limits until PayPal says it went through or failed.
+- When the bank refuses a call, the AI only gets a short code. The dashboard's **Activity** page shows you what the bank said, like `paypal:NOT_FOUND`.
+- Setup saves your keys in `~/.config/kordn/keys.env`, readable only by you. Keys set in the environment take precedence.
 
 **Real money.** Choosing Live asks you to type `real money` to confirm, then suggests small limits: $10 per payment, $20 a day, and every payment waits for your approval on the dashboard. kordn says LIVE when it starts, and the dashboard shows it on every page. You can raise the limits later, under Limits.
 
@@ -237,7 +246,7 @@ kordn gives the AI exactly four tools, and nothing else:
 kordn has two modes:
 
 - **Guard** (the default). Every payment goes through kordn's checks. But if the AI app has other powers too, like a browser or a shell, it could reach your bank another way. Make kordn its only way to your money.
-- **Contain** (Linux with Docker). The AI runs in a sealed sandbox with no network, and kordn is its only way out. The security claims in [docs/threat-model.md](docs/threat-model.md) apply to this mode. See [docs/contain.md](docs/contain.md).
+- **Contain** (Linux with rootless Docker). The AI runs in a sealed sandbox with no network, and kordn is its only way out.
 
 <details>
 <summary>Run the demo agent in Contain mode</summary>
@@ -250,6 +259,11 @@ kordn contain --admin
 Before the agent starts, kordn runs 14 isolation checks and prints which passed. Only if all of them pass is it Contain. Otherwise the agent still runs, labelled Guard, and `--require-contain` refuses instead. On a normal (rootful) Docker install the result is Guard, and that's correct.
 
 </details>
+
+What kordn doesn't do:
+- It doesn't stop prompt injection in general. It limits what a tricked AI can *do* with your money.
+- A tunnel provider (Cloudflare, ngrok) sees the traffic, tokens included. Use one you trust.
+- Your provider key itself can do anything its permissions allow. Keep it away from the AI, and use a restricted key where you can.
 
 ## All options
 
@@ -266,7 +280,7 @@ Before the agent starts, kordn runs 14 isolation checks and prints which passed.
 | `--port <n>` | HTTP port (default 3333) |
 | `--policy <file>` | Replace the stored rules with this file |
 | `--data <folder>` | Where kordn keeps its data (default `~/.local/state/kordn`) |
-| `--bank <file>` | Guard a PayPal, Stripe or Plaid account ([docs/providers.md](docs/providers.md)) |
+| `--bank <file>` | Guard a PayPal, Stripe or Plaid account from a file, instead of `kordn setup` |
 
 ## Development
 
@@ -284,7 +298,6 @@ npm run test:concurrency                          # 50 rounds of concurrency and
 | `test/` | Tests |
 | `examples/` | Example rules and bank files |
 | `sandbox/` | The Contain image and the demo agent |
-| `docs/` | Threat model, Contain mode, providers and the design doc |
 
 Make a branch for each issue, open a pull request into `main`, and link the issue. Report security problems privately through GitHub's security advisories, not in issues.
 

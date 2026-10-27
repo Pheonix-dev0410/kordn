@@ -13,8 +13,8 @@ import { evaluateIsolation, type IsolationExpectations, type IsolationResult, NA
 import { SANDBOX_SOCKET, SECURITY_OPTS, TMP_TMPFS_OPTIONS } from './sandbox-contract.js';
 import { parseProbeOutput, probeScript } from './sandbox-probe.js';
 
-// Contain mode: how the untrusted agent container is run (design doc §9.1-9.2), and
-// runContain, which launches it and verifies isolation before the agent starts (§9.3).
+// Contain mode: how the untrusted agent container is run, and
+// runContain, which launches it and verifies isolation before the agent starts.
 // The guardian socket is the only thing the container gets from the host.
 
 export { SANDBOX_SOCKET } from './sandbox-contract.js';
@@ -115,7 +115,7 @@ export async function hostDockerSocketPaths(docker = 'docker'): Promise<string[]
     xdgRuntimeDir: process.env.XDG_RUNTIME_DIR,
   });
 }
-// ---- kordn contain: launch the sandbox and verify isolation (design doc §9.3) ----
+// ---- kordn contain: launch the sandbox and verify isolation ----
 
 /** PID 1 while the checks run. The agent starts only after them, via docker exec. */
 export const IDLE_SCRIPT = 'setInterval(() => {}, 1 << 30)';

@@ -24,7 +24,7 @@ import {
 } from './pages.js';
 import { SESSION_TTL_MS, type Session, Sessions, WindowLimit, sameSecret, secret } from './session.js';
 
-// Local admin UI (design doc §10). Loopback only, token login, server-side sessions, and a
+// Local admin UI. Loopback only, token login, server-side sessions, and a
 // CSRF token plus an exact Origin match on every POST. GET never changes state.
 
 export const LOOPBACK = '127.0.0.1';
