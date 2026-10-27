@@ -364,6 +364,25 @@ describe('Plaid', () => {
     expect(polls).toBe(3);
   });
 
+  it('rides out slow or failed checks while waiting, and retries the exchange; a refusal still stops it', async () => {
+    let call = 0;
+    const provider = fakeProvider((req) => {
+      call++;
+      if (req.url.pathname === '/link/token/get') {
+        if (call === 1) return new Error('The operation was aborted due to timeout');
+        if (call === 2) return { status: 503, json: { error_code: 'INTERNAL_SERVER_ERROR' } };
+        return { status: 200, json: { link_sessions: [{ finished_at: 'now', results: { item_add_results: [{ public_token: 'public-sandbox-4' }] } }] } };
+      }
+      return call === 4 ? new Error('fetch failed') : { status: 200, json: { access_token: 'access-sandbox-4' } };
+    });
+    expect(await waitForItem({ ...keys, fetch: provider.fetch }, 'link-sandbox-1', { intervalMs: 1 })).toBe('access-sandbox-4');
+    expect(provider.sent.map((r) => r.url.pathname)).toEqual(['/link/token/get', '/link/token/get', '/link/token/get', '/item/public_token/exchange', '/item/public_token/exchange']);
+
+    const refused = fakeProvider(() => ({ status: 400, json: { error_code: 'INVALID_LINK_TOKEN' } }));
+    await expect(waitForItem({ ...keys, fetch: refused.fetch }, 'link-sandbox-1', { intervalMs: 1 })).rejects.toThrow(/^plaid:INVALID_LINK_TOKEN$/);
+    expect(refused.sent).toHaveLength(1);
+  });
+
   it('keeps waiting after a session ends without a bank, and says so once per session', async () => {
     const ended = { finished_at: 'then', results: { item_add_results: [] } };
     const replies = [[ended], [ended], [ended, { finished_at: null }], [ended, { finished_at: 'now', results: { item_add_results: [{ public_token: 'public-sandbox-3' }] } }]];
@@ -381,7 +400,7 @@ describe('Plaid', () => {
   it('offers only checking and savings accounts in USD', async () => {
     const account = (id: string, type: string, currency = 'USD') => ({ account_id: id, name: id, mask: '0000', type, subtype: type === 'credit' ? 'credit card' : 'checking', balances: { iso_currency_code: currency } });
     const provider = fakeProvider(() => ({ status: 200, json: { accounts: [account('a', 'depository'), account('b', 'credit'), account('c', 'depository', 'CAD')] } }));
-    expect(await usdAccounts({ ...keys, fetch: provider.fetch }, 'access-sandbox-1')).toEqual([{ id: 'a', label: 'a checking ...0000' }]);
+    expect(await usdAccounts({ ...keys, fetch: provider.fetch }, 'access-sandbox-1')).toEqual([{ id: 'a', label: 'a checking ...0000', balanceMinor: null }]);
   });
 });
 

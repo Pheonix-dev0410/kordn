@@ -33,16 +33,39 @@ export function environmentOf(accessToken: string): PlaidEnvironment {
   return match[1] as PlaidEnvironment;
 }
 
-async function request<T>(keys: PlaidKeys, path: string, body: Record<string, unknown>): Promise<T> {
+async function request<T>(keys: PlaidKeys, path: string, body: Record<string, unknown>, timeoutMs = 8_000): Promise<T> {
   const res = await (keys.fetch ?? fetch)(`${HOSTS[keys.environment]}${path}`, {
     method: 'POST',
     headers: { 'content-type': 'application/json', 'plaid-client-id': keys.clientId, 'plaid-secret': keys.secret },
     body: JSON.stringify(body),
-    signal: AbortSignal.timeout(8_000),
+    signal: AbortSignal.timeout(timeoutMs),
   });
   const json = (await res.json().catch(() => ({}))) as T & { error_code?: string };
-  if (!res.ok) throw new Error(`plaid:${json.error_code ?? res.status}`);
+  if (!res.ok) throw new PlaidError(`plaid:${json.error_code ?? res.status}`, res.status >= 500 || res.status === 429);
   return json;
+}
+
+/** Plaid answered with an error. Only a 5xx or 429 is worth asking again. */
+class PlaidError extends Error {
+  constructor(message: string, readonly retryable: boolean) {
+    super(message);
+  }
+}
+
+// Setup talks to Plaid right after a bank is connected, when Plaid can be slow: longer
+// timeouts, and a few tries for timeouts, network errors, 5xx and 429.
+const SETUP_TIMEOUT_MS = 30_000;
+const retryable = (error: unknown) => !(error instanceof PlaidError) || error.retryable;
+
+async function setupRequest<T>(keys: PlaidKeys, path: string, body: Record<string, unknown>, tries = 3): Promise<T> {
+  for (let attempt = 1; ; attempt++) {
+    try {
+      return await request<T>(keys, path, body, SETUP_TIMEOUT_MS);
+    } catch (error) {
+      if (attempt >= tries || !retryable(error)) throw error;
+      await new Promise((resolve) => setTimeout(resolve, 1_000 * attempt));
+    }
+  }
 }
 
 interface Account {
@@ -128,6 +151,8 @@ function toMinor(amount: number): number {
 export interface PlaidAccount {
   id: string;
   label: string;
+  /** Plaid's last known balance in minor units, if it has one. */
+  balanceMinor: number | null;
 }
 
 /** A sandbox test bank with sample transactions, one carrying a prompt injection, made without a browser. */
@@ -152,7 +177,7 @@ export async function sandboxItem(keys: PlaidKeys): Promise<string> {
       },
     ],
   };
-  const { public_token } = await request<{ public_token: string }>(keys, '/sandbox/public_token/create', {
+  const { public_token } = await setupRequest<{ public_token: string }>(keys, '/sandbox/public_token/create', {
     // First Platypus Bank, Plaid's non-OAuth test bank.
     institution_id: 'ins_109508',
     initial_products: ['transactions'],
@@ -163,7 +188,7 @@ export async function sandboxItem(keys: PlaidKeys): Promise<string> {
 
 /** Plaid's hosted sign-in page. Open `url` in a browser, then `waitForItem(linkToken)`. */
 export async function hostedLink(keys: PlaidKeys): Promise<{ url: string; linkToken: string }> {
-  const created = await request<{ link_token: string; hosted_link_url: string }>(keys, '/link/token/create', {
+  const created = await setupRequest<{ link_token: string; hosted_link_url: string }>(keys, '/link/token/create', {
     client_name: 'kordn',
     user: { client_user_id: 'kordn-owner' },
     products: ['transactions'],
@@ -184,7 +209,7 @@ interface LinkSession {
  * Waits until a bank is connected on the hosted page, then returns the access token. One link
  * can have several sessions (a step like phone verification can end one, and reopening the
  * link starts another), so an ended session isn't the end: `onSessionEnded` says so, and the
- * wait goes on until the link expires.
+ * wait goes on until the link expires. A slow or failed check is just tried again.
  */
 export async function waitForItem(
   keys: PlaidKeys,
@@ -194,7 +219,14 @@ export async function waitForItem(
   const deadline = Date.now() + timeoutMs;
   let ended = 0;
   while (Date.now() < deadline) {
-    const { link_sessions = [] } = await request<{ link_sessions?: LinkSession[] }>(keys, '/link/token/get', { link_token: linkToken });
+    let link_sessions: LinkSession[];
+    try {
+      ({ link_sessions = [] } = await request<{ link_sessions?: LinkSession[] }>(keys, '/link/token/get', { link_token: linkToken }, SETUP_TIMEOUT_MS));
+    } catch (error) {
+      if (!retryable(error)) throw error;
+      await new Promise((resolve) => setTimeout(resolve, intervalMs));
+      continue;
+    }
     const added = link_sessions.flatMap((s) => s.results?.item_add_results ?? [])[0];
     if (added) return exchange(keys, added.public_token);
     const endedNow = link_sessions.filter((s) => s.finished_at).length;
@@ -206,14 +238,21 @@ export async function waitForItem(
 }
 
 async function exchange(keys: PlaidKeys, publicToken: string): Promise<string> {
-  const { access_token } = await request<{ access_token: string }>(keys, '/item/public_token/exchange', { public_token: publicToken });
+  const { access_token } = await setupRequest<{ access_token: string }>(keys, '/item/public_token/exchange', { public_token: publicToken });
   return access_token;
 }
 
 /** The connected checking and savings accounts in USD, which kordn can guard. */
 export async function usdAccounts(keys: PlaidKeys, accessToken: string): Promise<PlaidAccount[]> {
-  const { accounts } = await request<{ accounts: Account[] }>(keys, '/accounts/get', { access_token: accessToken });
+  const { accounts } = await setupRequest<{ accounts: Account[] }>(keys, '/accounts/get', { access_token: accessToken });
   return accounts
     .filter((a) => a.type === 'depository' && a.balances.iso_currency_code === 'USD')
-    .map((a) => ({ id: a.account_id, label: [a.name, a.subtype, a.mask && `...${a.mask}`].filter(Boolean).join(' ') }));
+    .map((a) => {
+      const balance = a.balances.available ?? a.balances.current;
+      return {
+        id: a.account_id,
+        label: [a.name, a.subtype, a.mask && `...${a.mask}`].filter(Boolean).join(' '),
+        balanceMinor: typeof balance === 'number' ? toMinor(balance) : null,
+      };
+    });
 }

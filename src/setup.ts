@@ -4,7 +4,7 @@ import { join } from 'node:path';
 import { createInterface } from 'node:readline';
 import { Writable } from 'node:stream';
 import { BankConfig, openBank } from './bank-config.js';
-import { PlaidAdapter, hostedLink, sandboxItem, usdAccounts, waitForItem } from './plaid.js';
+import { hostedLink, sandboxItem, usdAccounts, waitForItem } from './plaid.js';
 import type { PlaidEnvironment, PlaidKeys } from './plaid.js';
 import { AmountMinor, PayeeId, Policy } from './schema.js';
 
@@ -311,7 +311,7 @@ async function connectPlaid(p: Prompter, say: (text?: string) => void, keys: Pla
       }
     }
   }
-  const balance = await new PlaidAdapter({ ...keys, accessToken, accountId: account.id }).getBalance('plaid:main');
-  say(`  Connected ${account.label}. Balance: $${(balance.balanceMinor / 100).toFixed(2)}`);
+  const balance = account.balanceMinor === null ? '' : `. Balance: $${(account.balanceMinor / 100).toFixed(2)}`;
+  say(`  Connected ${account.label}${balance}`);
   return { accountId: account.id, accessToken };
 }
