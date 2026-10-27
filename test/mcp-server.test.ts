@@ -22,9 +22,9 @@ const eras = [
 ];
 
 describe.each(eras)('MCP server over $era', ({ versionNegotiation }) => {
-  async function connect(handleCall: Guardian['handleCall']) {
+  async function connect(handleCall: Guardian['handleCall'], resourceId?: string) {
     const [clientSide, serverSide] = InMemoryTransport.createLinkedPair();
-    const handle = serveStdio(() => createMcpServer({ agentId: policy.agentId, handleCall }), { transport: serverSide });
+    const handle = serveStdio(() => createMcpServer({ agentId: policy.agentId, handleCall, resourceId }), { transport: serverSide });
     const client = new Client({ name: 'test', version: '0.0.0' }, versionNegotiation ? { versionNegotiation } : {});
     await client.connect(clientSide);
     closers.push(async () => {
@@ -49,6 +49,24 @@ describe.each(eras)('MCP server over $era', ({ versionNegotiation }) => {
     }
     const transfer = tools.find((t) => t.name === 'af_propose_transfer');
     expect(transfer?.inputSchema.required).toEqual(['resourceId', 'payeeId', 'amountMinor', 'currency', 'idempotencyKey']);
+  });
+
+  it("names the policy's account, so the agent doesn't have to ask for it", async () => {
+    const guardian = createFakeGuardian({ policy });
+    const client = await connect((agent, tool, args) => guardian.handleCall(agent, tool, args), policy.resourceId);
+    const { tools } = await client.listTools();
+    for (const tool of tools) {
+      const named = tool.description?.includes(`resourceId is "${policy.resourceId}"`);
+      expect(named, tool.name).toBe(tool.name !== 'af_get_transfer_status');
+    }
+    expect(client.getInstructions()).toContain(policy.resourceId);
+  });
+
+  it('names no account when it does not know it', async () => {
+    const { client } = await connectFake();
+    const { tools } = await client.listTools();
+    expect(tools.some((t) => t.description?.includes('resourceId is'))).toBe(false);
+    expect(client.getInstructions()).toBeUndefined();
   });
 
   it('advertises no resources or prompts', async () => {
