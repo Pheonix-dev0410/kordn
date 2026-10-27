@@ -157,7 +157,9 @@ function publicUrlOption(value: string): URL {
 /** The static domain, bare (name.ngrok-free.app) or as an https origin. */
 function ngrokOption(value: string): URL {
   const url = parsePublicUrl(/^https?:\/\//.test(value) ? value : `https://${value}`);
-  if (!url || url.protocol !== 'https:') throw new UsageError('--ngrok takes your ngrok domain, e.g. name.ngrok-free.app');
+  if (!url || url.protocol !== 'https:' || /\.trycloudflare\.com$/.test(url.hostname)) {
+    throw new UsageError('--ngrok takes the domain you claimed at dashboard.ngrok.com under Domains, e.g. name.ngrok-free.app, without /mcp');
+  }
   return url;
 }
 

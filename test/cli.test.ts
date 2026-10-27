@@ -844,8 +844,10 @@ exec sleep 30
     [['--http', '--ngrok', 'name.ngrok-free.app', '--tunnel'], /conflict/],
     [['--http', '--ngrok', 'name.ngrok-free.app', '--public-url', 'https://x.example'], /conflict/],
     [['--http', '--ngrok', 'name.ngrok-free.app', '--port', '0'], /fixed --port/],
-    [['--http', '--ngrok', 'http://name.ngrok-free.app'], /takes your ngrok domain/],
-    [['--http', '--ngrok', 'name.ngrok-free.app/path'], /takes your ngrok domain/],
+    [['--http', '--ngrok', 'http://name.ngrok-free.app'], /takes the domain you claimed/],
+    [['--http', '--ngrok', 'name.ngrok-free.app/path'], /takes the domain you claimed/],
+    [['--http', '--ngrok', 'https://four-words-in-here.trycloudflare.com/mcp.ngrok-free.app'], /dashboard\.ngrok\.com under Domains/],
+    [['--http', '--ngrok', 'four-words-in-here.trycloudflare.com'], /without \/mcp/],
   ])('rejects %j', async (args, message) => {
     const { code, stderr } = await run(args, { KORDN_TOKEN: 'x'.repeat(32) });
     expect(code).toBe(2);
