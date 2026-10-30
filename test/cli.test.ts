@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client';
 import { StdioClientTransport } from '@modelcontextprotocol/client/stdio';
-import { afterEach, beforeAll, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it } from 'vitest';
 import policyJson from '../examples/policy.json' with { type: 'json' };
 import { createFakeGuardian } from './fake-guardian.js';
 import { serveGuardianSocket } from '../src/guardian-socket.js';
@@ -18,10 +18,6 @@ const root = resolve(import.meta.dirname, '..');
 const cli = join(root, 'dist', 'index.js');
 const policy = Policy.parse(policyJson);
 const cleanup: (() => unknown)[] = [];
-
-beforeAll(() => {
-  execFileSync('npm', ['run', 'build', '--silent'], { cwd: root, stdio: 'pipe' });
-}, 60_000);
 
 afterEach(async () => {
   while (cleanup.length) await cleanup.pop()?.();

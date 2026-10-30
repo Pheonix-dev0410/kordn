@@ -1,4 +1,4 @@
-import { execFileSync, spawn } from 'node:child_process';
+import { spawn } from 'node:child_process';
 import { chmodSync, existsSync, mkdtempSync, readdirSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -20,7 +20,6 @@ function tempDir(): string {
 
 describe.skipIf(!DOCKER_TESTS)('kordn contain against Docker', () => {
   beforeAll(async () => {
-    execFileSync('npm', ['run', 'build', '--silent'], { cwd: ROOT, stdio: 'pipe' });
     await buildSandboxImage(image);
   }, 900_000);
 
