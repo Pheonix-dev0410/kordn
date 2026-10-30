@@ -2,12 +2,12 @@ import { execFileSync } from 'node:child_process';
 import { join, resolve } from 'node:path';
 import { expect, it } from 'vitest';
 
-// npm run demo, minus the build: each scene prints what kordn did and what the bank sent.
+// npm run demo, minus the build (test/build.ts builds once, before all test files): each
+// scene prints what kordn did and what the bank sent.
 
 const root = resolve(import.meta.dirname, '..');
 
 it('runs every demo scene and shows the expected outcomes', () => {
-  execFileSync('npm', ['run', 'build', '--silent'], { cwd: root, stdio: 'pipe' });
   const output = execFileSync(process.execPath, ['--disable-warning=ExperimentalWarning', join(root, 'dist', 'demo.js')], {
     encoding: 'utf8',
     // The whole environment, so docker finds its daemon.
